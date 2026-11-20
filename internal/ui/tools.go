@@ -1,0 +1,98 @@
+package ui
+
+import (
+	"strconv"
+	"time"
+
+	mui "github.com/egoist/mygo/ui"
+	"github.com/lobehub/lobe-mygo/pkg/code"
+	"github.com/lobehub/lobe-mygo/pkg/display"
+	"github.com/lobehub/lobe-mygo/pkg/feedback"
+	"github.com/lobehub/lobe-mygo/pkg/layout"
+	"github.com/lobehub/lobe-mygo/pkg/lucide"
+	"github.com/lobehub/lobe-mygo/pkg/markdown"
+	"github.com/lobehub/lobe-mygo/pkg/theme"
+
+	"ada_chat/internal/app"
+)
+
+func toolIcon(key string) *mui.SVG {
+	switch key {
+	case "search_docs":
+		return lucide.Search()
+	case "read_file":
+		return lucide.FileText()
+	case "run_tests":
+		return lucide.Terminal()
+	case "list_prs":
+		return lucide.GitPullRequest()
+	}
+	return lucide.Wrench()
+}
+
+// toolCard 是对话里的一次工具调用：一行标题（工具名、状态、耗时），展开后是参数和结果。
+func toolCard(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
+	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).AlignSelf(mui.Stretch).Clip()
+	card.Children(func() {
+		p := mui.CollapsibleBase(c.Key(call.ID), &call.Open)
+		tr := p.Trigger.Label(call.Name).Row().FillWidth().Padding(10, 12).Gap(8).AlignItems(mui.Center).
+			Cursor(mui.CursorPointer).Unselectable()
+		if tr.Hovered() {
+			tr.Background(tk.FillTertiary)
+		}
+		tr.Children(func() {
+			mui.Icon(c, toolIcon(call.Key)).FontSize(14).TextColor(tk.TextSecondary)
+			mui.Text(c, call.Name).FontSize(13).FontWeight(600).TextColor(tk.Text)
+			toolStatus(c, call)
+			mui.Spacer(c)
+			if took := toolTook(call); took != "" {
+				mui.Text(c, took).FontSize(11).TextColor(tk.TextTertiary)
+			}
+			mui.Icon(c, lucide.ChevronDown()).FontSize(14).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
+		})
+		p.Panel(func() {
+			// 上下留白与左右一致：标题行 10 + 面板 2，标签距上边框正好 12。
+			mui.Column(c).Padding(2, 12, 12, 12).Gap(6).Children(func() {
+				mui.Text(c, "参数").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary)
+				code.Snippet(c, call.Args, code.SnippetProps{Language: "json", Variant: code.Filled, FontSize: 12})
+				if call.State == app.ToolRunning {
+					return
+				}
+				mui.Text(c, "结果").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary).Margin(4, 0, 0, 0)
+				if call.State == app.ToolFailed {
+					feedback.Alert(c, "工具没有跑完", feedback.AlertProps{
+						Type: feedback.Error, Variant: feedback.Plain, Description: call.Result, Selectable: true,
+					})
+					return
+				}
+				markdown.Markdown(c, call.Result, markdown.MarkdownProps{Variant: markdown.Chat, FontSize: 13})
+			})
+		})
+	})
+}
+
+func toolStatus(c *mui.Context, call *app.ToolCall) {
+	if call.State == app.ToolRunning {
+		feedback.Spin(c, feedback.SpinProps{CustomSize: 11}, nil)
+		display.Tag(c, "运行中", display.TagProps{Variant: display.TagBorderless, Color: display.TagProcessing, Size: theme.Small})
+		return
+	}
+	if call.State == app.ToolFailed {
+		display.Tag(c, "失败", display.TagProps{Variant: display.TagBorderless, Color: display.TagError, Size: theme.Small})
+		return
+	}
+	display.Tag(c, "已完成", display.TagProps{Variant: display.TagBorderless, Color: display.TagSuccess, Size: theme.Small})
+}
+
+func toolTook(call *app.ToolCall) string {
+	if call.State == app.ToolRunning {
+		return ""
+	}
+	if call.Took <= 0 {
+		return ""
+	}
+	if call.Took < time.Second {
+		return strconv.Itoa(int(call.Took/time.Millisecond)) + "ms"
+	}
+	return strconv.FormatFloat(call.Took.Seconds(), 'f', 1, 64) + "s"
+}
