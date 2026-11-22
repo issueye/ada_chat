@@ -17,16 +17,7 @@ import (
 )
 
 func toolIcon(key string) *mui.SVG {
-	switch key {
-	case "search_docs":
-		return lucide.Search()
-	case "read_file":
-		return lucide.FileText()
-	case "run_tests":
-		return lucide.Terminal()
-	case "list_prs":
-		return lucide.GitPullRequest()
-	}
+	_ = key
 	return lucide.Wrench()
 }
 

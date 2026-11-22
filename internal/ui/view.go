@@ -17,20 +17,32 @@ const TitleBarHeight = 44
 type UI struct {
 	App *app.App
 
-	sidebarWidth  float32
-	sidebarOpen   bool
-	workspaceOpen bool
+	sidebarWidth float32
+	sidebarOpen  bool
 
 	query string
 
-	modelOpen bool
-	chatMenu  bool
+	chatMenu bool
 
 	settings    *form.Form[app.Prefs]
 	settingsUp  bool
+	settingsTab int
+	showKey     bool
 	renameUp    bool
 	renameDraft string
 	confirmDel  bool
+
+	botDraft  app.Bot
+	botErr    string
+	botDirErr string
+	botUp     bool
+
+	dirPicking bool
+	pickDir    func() (string, error)
+
+	pathPicking string
+	pickFile    func(kind string) (string, error)
+	dispatch    func(func())
 
 	chatList mui.ListState
 	activeID int
@@ -45,9 +57,13 @@ func New(a *app.App) *UI {
 		sidebarWidth: sidebarDefault,
 		sidebarOpen:  true,
 		settings:     form.New(a.Prefs),
+		botDraft:     app.Bot{Workspace: a.Workspace},
 		activeID:     a.ActiveID,
 	}
 }
+
+// SetDispatch 让目录选择这类异步 UI 改动回到 UI 线程。
+func (u *UI) SetDispatch(fn func(func())) { u.dispatch = fn }
 
 // Root 是窗口的内容：每帧由 MyGo 调用，按状态重建。
 func (u *UI) Root(c *mui.Context) {
@@ -66,14 +82,9 @@ func (u *UI) Root(c *mui.Context) {
 		u.settingsDialog(c)
 		u.renameDialog(c)
 		u.deleteDialog(c)
+		u.botDialog(c)
 		feedback.ToastHost(c, feedback.ToastHostProps{})
 	})
-}
-
-// isShortcut 把 "mod+k" 这样的按键（display.Hotkey 的写法）绑到窗口上。
-func isShortcut(c *mui.Context, keys string) bool {
-	mods, key, ok := hotkeyBinding(keys)
-	return ok && c.Shortcut(mods, key)
 }
 
 // resetListIfSwitched 让列表在切换会话后从新的一头开始，不带着上一条对话的滚动位置。

@@ -19,21 +19,9 @@ import (
 
 // 对话区是一条固定宽度的列，和 lobe-chat 在大窗口里保持一致。
 const (
-	conversationWidth   = 880
-	suggestionGridWidth = 560
-	chatHeaderHeight    = 54
+	conversationWidth = 880
+	chatHeaderHeight  = 54
 )
-
-type suggestion struct {
-	title  string
-	prompt string
-}
-
-var suggestions = []suggestion{
-	{"搭起界面骨架", "帮我搭出一个原生聊天应用的骨架：标题栏、侧栏、对话区和输入框。"},
-	{"挑一套设计变量", "浅色和深色的聊天窗口，该用哪些 Lobe token？"},
-	{"规划快捷键", "第一天该给这个应用定下哪些键盘快捷键？"},
-}
 
 // chatPanel 是放对话的卡片，位于侧栏右侧。
 func (u *UI) chatPanel(c *mui.Context) {
@@ -49,6 +37,10 @@ func (u *UI) chatPanel(c *mui.Context) {
 	mui.Column(c).Grow(1).Basis(0).MinWidth(0).Margin(0, 8, 8, inset).
 		Radius(tk.BorderRadiusLG).Background(tk.BgContainer).Border(1, edge).Clip().
 		Children(func() {
+			if u.App.Current() == nil {
+				u.welcomePanel(c, tk)
+				return
+			}
 			u.chatHeader(c, tk)
 			mui.Box(c).Height(1).Shrink(0).Background(tk.BorderSecondary)
 			mui.Column(c).Grow(1).Basis(0).MinHeight(0).AlignItems(mui.Center).Children(func() {
@@ -58,21 +50,49 @@ func (u *UI) chatPanel(c *mui.Context) {
 		})
 }
 
+// welcomePanel 是没有任何对话时的空工作台：这里没有预置聊天，只引导添加机器人。
+func (u *UI) welcomePanel(c *mui.Context, tk *theme.Tokens) {
+	mui.Column(c).Fill().Center().Gap(18).Padding(32).Children(func() {
+		display.Empty(c, display.EmptyProps{
+			Icon:        lucide.Bot(),
+			Title:       "还没有对话",
+			Description: "添加一个机器人，选择它的工作目录。消息会交给那个工作区里的进程。",
+		})
+		if action.Button(c, "添加机器人", action.ButtonProps{Variant: action.Primary}).Clicked() {
+			u.openBotDialog()
+		}
+	})
+}
+
 func (u *UI) chatHeader(c *mui.Context, tk *theme.Tokens) {
 	s := u.App.Current()
 	if s == nil {
 		return
 	}
+	bot := u.botForSession(s)
 	mui.Row(c).Height(chatHeaderHeight).Shrink(0).Padding(8, 16).Gap(8).AlignItems(mui.Center).Justify(mui.SpaceBetween).Children(func() {
 		mui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(3).Children(func() {
 			mui.Row(c).Gap(8).AlignItems(mui.Center).Children(func() {
 				mui.Text(c, s.Title).FontSize(15).FontWeight(600).TextColor(tk.Text).SingleLine().MaxWidth(560)
+				if bot != nil {
+					display.Tag(c, bot.Name, display.TagProps{
+						Variant: display.TagBorderless, Color: display.TagGray, Size: theme.Small, Icon: botGlyphSVG(bot.Icon),
+					})
+				}
 				if s.Pinned {
 					display.Tag(c, "已置顶", display.TagProps{Variant: display.TagBorderless, Color: display.TagGold, Size: theme.Small, Icon: lucide.Pin()})
 				}
 			})
 			mui.Row(c).Gap(6).AlignItems(mui.Center).Children(func() {
-				display.Tag(c, u.App.Prefs.Model, display.TagProps{Variant: display.TagBorderless, Color: display.TagGray, Size: theme.Small})
+				if bot != nil && bot.Model != "" {
+					display.Tag(c, bot.Model, display.TagProps{Variant: display.TagBorderless, Color: display.TagGray, Size: theme.Small})
+				}
+				if bot != nil {
+					tag := display.Tag(c, compactPath(bot.Workspace), display.TagProps{
+						Variant: display.TagBorderless, Color: display.TagGray, Size: theme.Small, Icon: lucide.FolderClosed(),
+					})
+					overlay.Tooltip(c, tag, "工作目录: "+bot.Workspace, overlay.TooltipProps{})
+				}
 				display.Text(c, "·", display.TextProps{Type: display.TextSecondary, FontSize: 12})
 				display.Text(c, messageCount(len(s.Messages)), display.TextProps{Type: display.TextSecondary, FontSize: 12})
 			})
@@ -81,6 +101,22 @@ func (u *UI) chatHeader(c *mui.Context, tk *theme.Tokens) {
 			u.conversationMenu(c, s)
 		})
 	})
+}
+
+// botForSession 返回这条对话绑定的机器人。
+func (u *UI) botForSession(s *app.Session) *app.Bot {
+	if s == nil || s.BotID == 0 {
+		return nil
+	}
+	return u.App.BotByID(s.BotID)
+}
+
+// assistantName 是当前对话里回答者的名字。
+func (u *UI) assistantName() string {
+	if b := u.botForSession(u.App.Current()); b != nil {
+		return b.Name
+	}
+	return "机器人"
 }
 
 func messageCount(n int) string {
@@ -100,9 +136,13 @@ func (u *UI) conversationText(s *app.Session) string {
 			b.WriteString("\n\n")
 		}
 		if m.Role == app.RoleUser {
-			b.WriteString("**" + u.App.Prefs.Name + "：** ")
+			b.WriteString("**" + u.App.UserName() + "：** ")
 		} else {
-			b.WriteString("**Ada：** ")
+			name := "机器人"
+			if bot := u.botForSession(s); bot != nil {
+				name = bot.Name
+			}
+			b.WriteString("**" + name + "：** ")
 		}
 		b.WriteString(m.Text)
 	}
@@ -147,9 +187,9 @@ func (u *UI) transcript(c *mui.Context, tk *theme.Tokens) {
 	msgs := s.Messages
 	u.chatList.Key = func(i int) any { return msgs[i].ID }
 	u.chatList.Label = func(i int) string {
-		name := "Ada"
+		name := u.assistantName()
 		if msgs[i].Role == app.RoleUser {
-			name = u.App.Prefs.Name
+			name = u.App.UserName()
 		}
 		label := name + ": " + app.Clip(msgs[i].Text, 80)
 		if n := len(msgs[i].Tools); n > 0 {
@@ -177,28 +217,17 @@ func (u *UI) transcript(c *mui.Context, tk *theme.Tokens) {
 }
 
 func (u *UI) emptyChat(c *mui.Context, tk *theme.Tokens) {
+	bot := u.botForSession(u.App.Current())
+	title, desc := "开始一次对话", "消息会交给这个工作目录里的机器人进程。"
+	if bot != nil {
+		title = "和 " + bot.Name + " 对话"
+		desc = "它运行在 " + bot.Workspace + "，第一句话会发到那个进程。"
+	}
 	mui.Column(c).Gap(20).Padding(24, 0, 8, 0).AlignItems(mui.Center).Children(func() {
 		display.Empty(c, display.EmptyProps{
 			Icon:        lucide.MessageSquare(),
-			Title:       "今天想做点什么？",
-			Description: "全部在本机完成，内容不会离开设备。",
-		})
-		grid := layout.Grid(c, layout.GridProps{MaxItemWidth: 220, MaxColumns: 2, Gap: 10}).Width(suggestionGridWidth)
-		grid.AlignSelf(mui.Center)
-		grid.Children(func() {
-			for _, sg := range suggestions {
-				card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined, Clickable: true}).Padding(12, 14)
-				card.Label(sg.title).Description(sg.prompt)
-				card.Children(func() {
-					mui.Text(c, sg.title).FontSize(13).FontWeight(600).TextColor(tk.Text)
-					display.Text(c, sg.prompt, display.TextProps{
-						Type: display.TextSecondary, FontSize: 12, Rows: 2,
-					})
-				})
-				if card.Clicked() {
-					u.App.Draft = sg.prompt
-				}
-			}
+			Title:       title,
+			Description: desc,
 		})
 	})
 }
@@ -218,7 +247,7 @@ func (u *UI) userMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) {
 			b.Children(func() {
 				mui.Text(c, m.Text).FontSize(14).LineHeight(1.5).TextColor(tk.Text)
 			})
-			display.Text(c, app.RelativeTime(c.Now(), m.At)+" · "+u.App.Prefs.Name, display.TextProps{
+			display.Text(c, app.RelativeTime(c.Now(), m.At)+" · "+u.App.UserName(), display.TextProps{
 				Type: display.TextSecondary, FontSize: 11,
 			})
 		})
@@ -226,19 +255,22 @@ func (u *UI) userMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) {
 }
 
 func (u *UI) assistantMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) {
-	agentState := display.AgentIdle
-	if m.Streaming {
-		agentState = display.AgentThinking
+	bot := u.botForSession(u.App.Current())
+	name := "机器人"
+	if bot != nil {
+		name = bot.Name
 	}
 	mui.Row(c).Gap(12).AlignItems(mui.Start).PaddingY(10).Children(func() {
 		mui.Box(c).PaddingY(4).Shrink(0).Children(func() {
-			display.AgentAvatar(c, display.AgentAvatarProps{
-				Seed: "ada", Name: "Ada", Size: 30, Shape: display.AgentFace, State: agentState,
-			})
+			if bot != nil {
+				botAvatar(c, bot.Icon, bot.Color, 30)
+				return
+			}
+			mui.Icon(c, lucide.Bot()).FontSize(24).TextColor(tk.TextTertiary)
 		})
 		mui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(6).Children(func() {
 			mui.Row(c).Gap(8).AlignItems(mui.Center).Children(func() {
-				display.Text(c, "Ada", display.TextProps{FontSize: 13, Strong: true})
+				display.Text(c, name, display.TextProps{FontSize: 13, Strong: true})
 				display.Text(c, app.RelativeTime(c.Now(), m.At), display.TextProps{Type: display.TextSecondary, FontSize: 11})
 				if m.Streaming {
 					display.Text(c, "思考中", display.TextProps{Type: display.TextSecondary, FontSize: 11, Shiny: true})

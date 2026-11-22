@@ -34,12 +34,13 @@ func (u *UI) composerCard(c *mui.Context, tk *theme.Tokens) {
 			// 无边框输入区会保留一圈透明的 1 DIP 边框；负外边距把它抵消掉，
 			// 让文字落在卡片 12 DIP 的内边距上。
 			mui.Box(c).MinHeight(92).Margin(-1, -1, 0, -1).Children(func() {
+				placeholder := "给 " + u.assistantName() + " 发消息…"
 				area := field.TextArea(c, &u.App.Draft, field.TextAreaProps{
 					Variant:     field.InputBorderless,
-					Placeholder: "给 Ada 发消息…",
+					Placeholder: placeholder,
 					MinRows:     3,
 					MaxRows:     10,
-				}).Label("给 Ada 发消息")
+				}).Label("给 " + u.assistantName() + " 发消息")
 				area.Padding(0).FontSize(14).LineHeight(1.45)
 				area.OnTextKey(func(k mui.TextKey) bool {
 					send := k.Key == mui.KeyEnter &&

@@ -2,33 +2,45 @@ package main
 
 import (
 	"log"
-	"time"
 
 	"github.com/egoist/mygo"
 
 	"ada_chat/internal/app"
+	"ada_chat/internal/bot"
 	"ada_chat/internal/ui"
 )
 
 func main() {
 	mygo.App.SetLocale("zh-Hans")
 
-	state := app.New(time.Now())
+	state := app.New()
+	supervisor, err := bot.NewSupervisor(state)
+	if err != nil {
+		log.Printf("机器人进程管理不可用: %v", err)
+	} else {
+		state.SetEngine(supervisor)
+	}
 	view := ui.New(state)
 
 	var win *mygo.Window
-	state.SetDispatch(func(fn func()) {
+	dispatch := func(fn func()) {
 		if win != nil {
 			win.Update(fn)
 			return
 		}
 		fn()
-	})
+	}
+	state.SetDispatch(dispatch)
+	view.SetDispatch(dispatch)
 
 	mygo.App.WhenReady(func() {
 		win = mygo.NewWindow(ui.WindowOptions(view))
 	})
-	if err := mygo.App.Run(); err != nil {
-		log.Fatal(err)
+	runErr := mygo.App.Run()
+	if supervisor != nil {
+		_ = supervisor.Close()
+	}
+	if runErr != nil {
+		log.Fatal(runErr)
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
-	"github.com/lobehub/lobe-mygo/pkg/overlay"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
 
 	"ada_chat/internal/app"
@@ -24,14 +23,12 @@ const (
 	sidebarDefault = 276
 )
 
-var workspaces = []string{"Ada 工作区", "个人"}
-
 type sessionGroup struct {
 	label string
 	items []*app.Session
 }
 
-// sidebar 是对话来源列表：工作区切换、搜索框和对话，新的在前。
+// sidebar 是对话来源列表：添加机器人、搜索框、机器人分组和对话，新的在前。
 func (u *UI) sidebar(c *mui.Context) {
 	layout.DraggablePanel(c, &u.sidebarWidth, &u.sidebarOpen, layout.DraggablePanelProps{
 		Placement: layout.Left,
@@ -43,62 +40,50 @@ func (u *UI) sidebar(c *mui.Context) {
 		tk := theme.TokensOf(c)
 		mui.Column(c).Fill().TextColor(tk.TextSecondary).Children(func() {
 			u.sidebarHeader(c)
-			mui.Box(c).Padding(0, 10, 6, 10).Children(func() {
-				field.SearchBar(c, &u.query, field.SearchBarProps{
-					Placeholder: "搜索对话",
-					ShortKey:    "mod+k",
-					Size:        theme.Small,
-					Variant:     field.InputFilled,
-				}).Label("搜索对话")
-			})
+			u.sidebarSearch(c)
 			mui.Scroll(c).Grow(1).Basis(0).Children(func() {
-				mui.Column(c).PaddingX(4).PaddingY(4).Gap(14).Children(func() { u.sessionSections(c) })
+				mui.Column(c).PaddingX(4).PaddingY(4).Gap(14).Children(func() {
+					u.botSection(c)
+					u.sessionSections(c)
+				})
 			})
 			u.sidebarFooter(c)
 		})
 	})
 }
 
+// sidebarHeader 顶部的整行按钮：侧栏里不再有工作区下拉，改用一条“添加机器人”入口。
 func (u *UI) sidebarHeader(c *mui.Context) {
-	mui.Row(c).Shrink(0).Padding(8, 6).Gap(4).AlignItems(mui.Center).Justify(mui.SpaceBetween).Children(func() {
-		u.workspaceSwitcher(c)
-		mui.Row(c).Gap(2).AlignItems(mui.Center).Children(func() {
-			if action.ActionIcon(c, lucide.SquarePen(), small("新建对话")).Clicked() || isShortcut(c, "mod+n") {
-				u.App.NewChat()
-				u.query = ""
-			}
-		})
-	})
+	mui.Column(c).Shrink(0).Padding(8, 10, 2, 10).Children(func() { u.addBotButton(c) })
 }
 
-func (u *UI) workspaceSwitcher(c *mui.Context) {
+func (u *UI) addBotButton(c *mui.Context) {
 	tk := theme.TokensOf(c)
-	items := make([]overlay.MenuItem, 0, len(workspaces))
-	for _, w := range workspaces {
-		it := overlay.MenuItem{Key: w, Label: w}
-		if w == u.App.Workspace {
-			it.Extra = "当前"
-		}
-		items = append(items, it)
+	b := mui.ButtonBase(c).Label("添加机器人").Height(36).AlignSelf(mui.Stretch).
+		Justify(mui.Center).Gap(8).Radius(tk.BorderRadiusSM).Cursor(mui.CursorPointer).TextColor(tk.Text)
+	bg := tk.FillSecondary
+	if b.Hovered() {
+		bg = tk.Fill
 	}
-	chosen := overlay.DropdownMenu(c, &u.workspaceOpen, overlay.DropdownMenuProps{Items: items}, func(t mui.Element) {
-		t.Row().Height(34).PaddingX(6).Gap(6).AlignItems(mui.Center).Radius(tk.BorderRadiusSM).
-			TextColor(tk.Text).Cursor(mui.CursorPointer).Label("工作区")
-		if t.Hovered() || u.workspaceOpen {
-			t.Background(tk.FillTertiary)
-		}
-		t.Children(func() {
-			display.Avatar(c, u.App.Workspace, display.AvatarProps{Size: 22})
-			mui.Column(c).MinWidth(0).Children(func() {
-				mui.Text(c, u.App.Workspace).FontSize(13).FontWeight(600).SingleLine()
-				mui.Text(c, "免费版").FontSize(11).TextColor(tk.TextTertiary).SingleLine()
-			})
-			mui.Icon(c, lucide.ChevronDown()).FontSize(12).TextColor(tk.TextTertiary)
-		})
+	b.Background(bg)
+	b.Children(func() {
+		mui.Icon(c, lucide.Plus()).FontSize(15).TextColor(tk.Primary)
+		mui.Text(c, "添加机器人").FontSize(13).FontWeight(500).SingleLine()
 	})
-	if chosen != "" {
-		u.App.Workspace = chosen
+	if b.Clicked() {
+		u.openBotDialog()
 	}
+}
+
+func (u *UI) sidebarSearch(c *mui.Context) {
+	mui.Box(c).Shrink(0).Padding(0, 10, 6, 10).Children(func() {
+		field.SearchBar(c, &u.query, field.SearchBarProps{
+			Placeholder: "搜索对话",
+			ShortKey:    "mod+k",
+			Size:        theme.Small,
+			Variant:     field.InputFilled,
+		}).Label("搜索对话")
+	})
 }
 
 func (u *UI) sessionSections(c *mui.Context) {
@@ -123,7 +108,13 @@ func (u *UI) sessionSections(c *mui.Context) {
 				Label:       s.Title,
 				Description: s.Preview,
 				Extra:       app.RelativeTime(now, s.Updated),
-				Avatar:      func() { display.Avatar(c, s.Title, display.AvatarProps{Size: 22}) },
+				Avatar: func() {
+					if b := u.botForSession(s); b != nil {
+						botAvatar(c, b.Icon, b.Color, 22)
+						return
+					}
+					display.Avatar(c, s.Title, display.AvatarProps{Size: 22})
+				},
 			}
 			if s.Unread > 0 {
 				it.Extra = "新"
@@ -174,9 +165,9 @@ func (u *UI) sidebarFooter(c *mui.Context) {
 	tk := theme.TokensOf(c)
 	layout.Divider(c, layout.DividerProps{})
 	mui.Row(c).Shrink(0).Padding(8).Gap(4).AlignItems(mui.Center).Children(func() {
-		display.Avatar(c, u.App.Prefs.Name, display.AvatarProps{Size: 26})
+		display.Avatar(c, u.App.UserName(), display.AvatarProps{Size: 26})
 		mui.Column(c).Grow(1).Basis(0).MinWidth(0).Padding(0, 0, 0, 4).Children(func() {
-			mui.Text(c, u.App.Prefs.Name).FontSize(13).FontWeight(500).TextColor(tk.Text).SingleLine()
+			mui.Text(c, u.App.UserName()).FontSize(13).FontWeight(500).TextColor(tk.Text).SingleLine()
 			mui.Text(c, "本地会话").FontSize(11).TextColor(tk.TextTertiary).SingleLine()
 		})
 		if action.ActionIcon(c, lucide.CircleHelp(), small("帮助")).Clicked() {
