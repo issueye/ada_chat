@@ -132,23 +132,41 @@ func (u *UI) botRow(c *mui.Context, tk *theme.Tokens, b *app.Bot, active bool) {
 	}
 }
 
-// botContextMenu 让机器人的侧栏行可以右键：编辑资料，或重启它的进程。
+// botContextMenu 让机器人的侧栏行可以右键：新建会话、编辑资料，或重启它的进程。
 func (u *UI) botContextMenu(c *mui.Context, row mui.Element, b *app.Bot) {
 	startLabel := "重启进程"
 	if b.State == app.BotStopped || b.State == app.BotError {
 		startLabel = "启动进程"
 	}
 	items := []overlay.MenuItem{
+		{Key: "new", Label: "新建会话", Icon: lucide.MessageSquarePlus()},
 		{Key: "edit", Label: "编辑信息", Icon: lucide.Pencil()},
 		{Key: "restart", Label: startLabel, Icon: lucide.RefreshCw(), Disabled: b.State == app.BotStarting},
 	}
 	chosen := overlay.ContextMenu(c, row, overlay.DropdownMenuProps{Items: items})
 	switch chosen {
+	case "new":
+		u.newBotSession(c, b)
 	case "edit":
 		u.openBotEdit(b)
 	case "restart":
 		u.restartBot(c, b)
 	}
+}
+
+// newBotSession 新开一条对话并切过去；runtime 侧会为它建独立的 agent session。
+func (u *UI) newBotSession(c *mui.Context, b *app.Bot) {
+	if _, err := u.App.NewBotSession(b.ID); err != nil {
+		feedback.ShowToast(c, feedback.ToastProps{
+			Title: "新建会话失败", Description: err.Error(), Type: feedback.ToastError,
+		})
+		return
+	}
+	u.App.StartBot(b.ID)
+	feedback.ShowToast(c, feedback.ToastProps{
+		Title: "已新建会话", Description: b.Name, Type: feedback.ToastSuccess,
+	})
+	c.Invalidate()
 }
 
 func (u *UI) restartBot(c *mui.Context, b *app.Bot) {

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,28 +22,30 @@ const (
 )
 
 // Message 是一轮消息，可以带着先跑完的工具调用。
+// Message 是对话里的一条消息。Parts 记录一轮回答的真实顺序。
 type Message struct {
-	ID        int
-	Role      Role
-	Text      string
-	At        time.Time
-	Streaming bool
-	Tools     []*ToolCall
+	ID        int         `json:"id"`
+	Role      Role        `json:"role"`
+	Text      string      `json:"text"`
+	At        time.Time   `json:"at"`
+	Streaming bool        `json:"streaming,omitempty"`
+	Tools     []*ToolCall `json:"tools,omitempty"`
 	// Parts 保留一轮回答的真实顺序：模型先写的文字、工具调用、工具之后的文字。
 	// 历史/非流式消息可能只有 Text 而没有 Parts。
-	Parts []Part
+	Parts []Part `json:"parts,omitempty"`
 }
 
 // Session 是一条对话。BotID 非零时，回答来自那个机器人的进程实例。
+// Session 是一条对话：机器人、标题、预览和消息。
 type Session struct {
-	ID       int
-	Title    string
-	Preview  string
-	Updated  time.Time
-	Unread   int
-	Pinned   bool
-	BotID    int
-	Messages []*Message
+	ID       int        `json:"id"`
+	Title    string     `json:"title"`
+	Preview  string     `json:"preview,omitempty"`
+	Updated  time.Time  `json:"updated"`
+	Unread   int        `json:"unread,omitempty"`
+	Pinned   bool       `json:"pinned,omitempty"`
+	BotID    int        `json:"botId"`
+	Messages []*Message `json:"messages,omitempty"`
 }
 
 // Prefs 是用户在设置里保存的偏好。它同时写进本机配置文件。
@@ -72,27 +75,29 @@ const (
 
 // Bot 是一个机器人。它对应一个进程实例：Workspace 是这个进程的工作目录。
 type Bot struct {
-	ID          int
-	Name        string
-	Description string
-	Instruction string
-	Model       string
-	Workspace   string
-	State       BotState
-	PID         int
-	Err         string
+	ID          int      `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Instruction string   `json:"instruction,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	Workspace   string   `json:"workspace"`
+	State       BotState `json:"-"` // 进程状态是瞬时的，重启后一律变成 BotStopped
+	PID         int      `json:"-"`
+	Err         string   `json:"-"`
 	// Icon 是 ui 侧图标表里的键，Color 是 #rrggbb。
-	Icon  string
-	Color string
+	Icon  string `json:"icon,omitempty"`
+	Color string `json:"color,omitempty"`
 }
 
 // BotEngine 管理机器人进程与 RPC 连接。它把状态回调到 App 的 Bot 方法。
 type BotEngine interface {
 	Start(b *Bot) error
 	Stop(id int) error
-	Send(b *Bot, turn int, text string) error
+	Send(b *Bot, turn int, text string, sessionID int) error
 	// Cancel 终止该轮正在进行的 RPC 调用；已结束的轮次返回错误。
 	Cancel(botID, turn int) error
+	// Approve 回答一次升级审批请求；runtime 等不到答复时按拒绝处理。
+	Approve(botID int, id string, allow bool, reason string) error
 	Close() error
 }
 
@@ -110,10 +115,16 @@ type App struct {
 	// dispatch 把改状态并重绘的闭包送到 UI 线程；为空时在当前帧同步执行，测试因此是确定的。
 	dispatch func(func())
 	nextID   int
+	// Approvals 是等待用户决定的升级审批，界面按队列显示；超时由 runtime 自己拒绝。
+	Approvals []Approval
+	// approvalOwner 是审批 id → 请求 的同步副本：窗口运行时 a.apply 是异步投递，
+	// DecideApproval 不能只靠界面队列来判断请求属于哪个机器人。
+	approvalMu    sync.Mutex
+	approvalOwner map[string]Approval
 }
 
-// New 建出一个空的工作台；对话和机器人来自用户添加的机器人。
-// 偏好从本机配置文件读取；没有保存过时，Agent 设置回落到环境变量。
+// New 建出一个工作台：偏好从本机配置文件读取，机器人/对话从上一次的状态文件恢复。
+// 没有保存过时，Agent 设置回落到环境变量，工作台为空。
 func New() *App {
 	p := Prefs{
 		EnterToSend: true,
@@ -144,7 +155,9 @@ func New() *App {
 	if p.Model == "" {
 		p.Model = strings.TrimSpace(os.Getenv("ADA_LLM_MODEL"))
 	}
-	return &App{Prefs: p}
+	a := &App{Prefs: p}
+	a.restore()
+	return a
 }
 
 // ConfigFile 返回偏好文件的位置；目录不存在时也能返回路径。
@@ -245,6 +258,7 @@ func (a *App) DeleteSession(id int) (int, bool) {
 				a.ActiveID = a.Sessions[min(i, len(a.Sessions)-1)].ID
 			}
 		}
+		a.persist()
 		return i, true
 	}
 	return 0, false
@@ -259,6 +273,7 @@ func (a *App) RestoreSession(s *Session, at int) {
 	copy(a.Sessions[at+1:], a.Sessions[at:])
 	a.Sessions[at] = s
 	a.ActiveID = s.ID
+	a.persist()
 }
 
 // Send 把草稿送进对话，并交给它绑定的机器人。上一轮还在生成时不再接受新消息。
@@ -328,6 +343,8 @@ func (a *App) StopTurn() bool {
 	last.Streaming = false
 	s.Preview = Clip(last.Text, 88)
 	s.Updated = a.now()
+	a.removeApprovals(s.BotID, last.ID)
+	a.persist()
 	return true
 }
 
@@ -357,9 +374,10 @@ func (a *App) sendToBot(s *Session, text string) {
 			return
 		}
 	}
-	if err := a.Engine.Send(bot, m.ID, text); err != nil {
+	if err := a.Engine.Send(bot, m.ID, text, s.ID); err != nil {
 		a.BotTurnFailed(bot.ID, m.ID, err.Error())
 	}
+	a.persist()
 }
 
 // Regenerate 丢掉最后一条回复，按同一个问题再问一次机器人。
@@ -382,6 +400,7 @@ func (a *App) DeleteMessage(s *Session, id int) {
 			continue
 		}
 		s.Messages = append(s.Messages[:i], s.Messages[i+1:]...)
+		a.persist()
 		return
 	}
 }
@@ -395,6 +414,7 @@ func (a *App) Rename(id int, title string) {
 	for _, s := range a.Sessions {
 		if s.ID == id {
 			s.Title = Clip(title, 60)
+			a.persist()
 			return
 		}
 	}
@@ -469,6 +489,7 @@ func (a *App) AddBot(b Bot) (*Bot, error) {
 	a.Bots = append([]*Bot{&b}, a.Bots...)
 	bot := a.Bots[0]
 	a.StartBot(bot.ID)
+	a.persist()
 	return bot, nil
 }
 
@@ -515,6 +536,7 @@ func (a *App) UpdateBot(id int, patch Bot) (*Bot, error) {
 	if moved && running {
 		a.StartBot(id)
 	}
+	a.persist()
 	return bot, nil
 }
 
@@ -583,7 +605,26 @@ func (a *App) SetBotInfo(id int, model, workspace string) {
 	})
 }
 
-// OpenBotChat 打开这个机器人的对话；没有就新建一条，并确保它的进程在运行。
+// NewBotSession 给机器人开一条新对话并切过去。
+//
+// 每个对话在 runtime 侧对应独立的 agent session（chat.send 带 sessionId），
+// 所以新对话不会带着上一轮对话的模型上下文。
+func (a *App) NewBotSession(botID int) (*Session, error) {
+	bot := a.BotByID(botID)
+	if bot == nil {
+		return nil, fmt.Errorf("机器人不存在")
+	}
+	s := &Session{
+		ID: a.id(), Title: "新对话", BotID: botID, Updated: a.now(),
+		Preview: "新会话",
+	}
+	a.Sessions = append([]*Session{s}, a.Sessions...)
+	a.ActiveID = s.ID
+	a.persist()
+	return s, nil
+}
+
+// OpenBotChat 打开这个机器人最近的一条对话；没有就新建一条，并确保它的进程在运行。
 func (a *App) OpenBotChat(id int) bool {
 	bot := a.BotByID(id)
 	if bot == nil {
@@ -593,6 +634,7 @@ func (a *App) OpenBotChat(id int) bool {
 	for _, s := range a.Sessions {
 		if s.BotID == id {
 			a.ActiveID = s.ID
+			a.persist()
 			return true
 		}
 	}
@@ -602,6 +644,7 @@ func (a *App) OpenBotChat(id int) bool {
 	}
 	a.Sessions = append([]*Session{s}, a.Sessions...)
 	a.ActiveID = s.ID
+	a.persist()
 	return true
 }
 
@@ -716,6 +759,76 @@ func hasToolPart(parts []Part, id string) bool {
 	return false
 }
 
+// BotApproval 收到一次审批请求；同一 id 只入队一次。
+func (a *App) BotApproval(botID, turn int, ap Approval) {
+	ap.BotID, ap.Turn = botID, turn
+	a.approvalMu.Lock()
+	if a.approvalOwner == nil {
+		a.approvalOwner = map[string]Approval{}
+	}
+	if _, ok := a.approvalOwner[ap.ID]; ok {
+		a.approvalMu.Unlock()
+		return
+	}
+	a.approvalOwner[ap.ID] = ap
+	a.approvalMu.Unlock()
+
+	a.apply(func() {
+		for _, x := range a.Approvals {
+			if x.ID == ap.ID {
+				return
+			}
+		}
+		a.Approvals = append(a.Approvals, ap)
+	})
+}
+
+// DecideApproval 回答一次审批请求；allow=false 即拒绝。
+//
+// runtime 等不到答复会按超时拒绝，所以找不到 id 时只当作已经结束，不报错。
+func (a *App) DecideApproval(id string, allow bool, reason string) error {
+	a.approvalMu.Lock()
+	ap, ok := a.approvalOwner[id]
+	delete(a.approvalOwner, id)
+	a.approvalMu.Unlock()
+	if !ok {
+		return nil
+	}
+	a.apply(func() {
+		for i := range a.Approvals {
+			if a.Approvals[i].ID == id {
+				a.Approvals = append(a.Approvals[:i], a.Approvals[i+1:]...)
+				return
+			}
+		}
+	})
+	if a.Engine == nil {
+		return fmt.Errorf("机器人进程还没有接上")
+	}
+	return a.Engine.Approve(ap.BotID, id, allow, reason)
+}
+
+// removeApprovals 丢掉属于某一轮的审批；回合结束/失败/停止后用户不必再回答。
+// 它只改内存里的队列与 id 映射，调用方决定是否在 UI 线程执行。
+func (a *App) removeApprovals(botID, turn int) {
+	a.approvalMu.Lock()
+	for id, ap := range a.approvalOwner {
+		if ap.BotID == botID && ap.Turn == turn {
+			delete(a.approvalOwner, id)
+		}
+	}
+	a.approvalMu.Unlock()
+
+	kept := a.Approvals[:0]
+	for _, ap := range a.Approvals {
+		if ap.BotID == botID && ap.Turn == turn {
+			continue
+		}
+		kept = append(kept, ap)
+	}
+	a.Approvals = kept
+}
+
 // BotTurnDone 结束一轮机器人回答；已经流式写入的文本保持原样，只在没有增量时用最终结果补齐。
 func (a *App) BotTurnDone(botID, turn int, final string) {
 	a.apply(func() {
@@ -730,6 +843,8 @@ func (a *App) BotTurnDone(botID, turn int, final string) {
 			m.Streaming = false
 			s.Preview = Clip(m.Text, 88)
 			s.Updated = a.now()
+			a.removeApprovals(botID, turn)
+			a.persist()
 		}
 	})
 }
@@ -752,6 +867,8 @@ func (a *App) BotTurnFailed(botID, turn int, reason string) {
 		}
 		m.Streaming = false
 		s.Preview = Clip(m.Text, 88)
+		a.removeApprovals(botID, turn)
+		a.persist()
 	})
 }
 

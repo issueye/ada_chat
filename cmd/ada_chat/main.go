@@ -40,6 +40,8 @@ func main() {
 	if supervisor != nil {
 		_ = supervisor.Close()
 	}
+	// 关窗时把机器人/对话状态落盘，下一轮启动从这里恢复。
+	_ = state.SaveState()
 	if runErr != nil {
 		log.Fatal(runErr)
 	}

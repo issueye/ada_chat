@@ -354,13 +354,15 @@ func (u *UI) reasoningCard(c *mui.Context, tk *theme.Tokens, m *app.Message, ind
 			mui.Icon(c, lucide.Brain()).FontSize(14).TextColor(tk.TextTertiary)
 			mui.Text(c, "思考过程").FontSize(12).FontWeight(500).TextColor(tk.TextSecondary)
 			if streaming {
-				feedback.Spin(c, feedback.SpinProps{CustomSize: 10}, nil)
+				// Spin 自带 AlignSelf(Start);在居中行里要改回 Center，否则会比文字高一截。
+				feedback.Spin(c, feedback.SpinProps{CustomSize: 10}, nil).AlignSelf(mui.Center)
 			}
 			mui.Spacer(c)
 			mui.Icon(c, lucide.ChevronDown()).FontSize(14).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
 		})
 		p.Panel(func() {
-			mui.Column(c).Padding(0, 12, 10, 12).Children(func() {
+			// 上留白与左留白一致(12)：思考正文不贴标题行。
+			mui.Column(c).Padding(12, 12, 10, 12).Children(func() {
 				markdown.Markdown(c, part.Text, markdown.MarkdownProps{
 					Variant:  markdown.Chat,
 					FontSize: 13,

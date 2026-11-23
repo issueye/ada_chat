@@ -53,16 +53,32 @@
   （实测在无 `ADA_BOT_RUNTIME` 环境下仍能启动并返回真实回答）。
 - 设置 OpenAI 兼容供应商后，runtime 启用 `llm-openai`、禁用 `llm-replay`；经 mock OpenAI SSE
   端点实测，请求带保存的 Bearer key，回复来自该供应商，模型回写为所选模型。
-- 当前没有自动化测试（按本轮要求移除了测试和快照）；验证方式是 `go build`、`go vet` 和临时探针。
+- 同一进程里的第二个机器人通过 `chat.send` 的 `botName`/`instruction` 拿到自己的身份：mock OpenAI
+  端点捕获到的系统提示里，第二个机器人不再看到第一个机器人的名字与指令（`TestInteropPerBotPersona`）。
+- 桌面桥挂载了 `rpc-guard`/`rpc-observe`：监听地址、客户端名与 `bot.info`/`chat.send`/`chat.approve`
+  三个方法在启动时由环境拼成白名单，客户端仍能正常握手与调用。
+- 审批往返已跑通（`TestInteropApproval`）：preset 启用 `seam-approval` + `approval-gate` 时，
+  runtime 发 `chat/approval`，宿主回 `chat.approve`，工具继续执行；超时/拒绝按 fail-closed。
+- 发布包风格 preset（`data/…` 相对包根 + `.ada-base` 锚点）可以经 `ada-rpc-agent` 装配成功。
+- 机器人、对话与消息持久化到 `%AppData%\ada_chat\state.json`：添加/编辑、发送、轮次结束、
+  改名/删除与关窗都会落盘；重启后侧栏机器人与历史消息恢复，进程按「未启动」恢复，
+  正在生成的消息标记为未完成、运行中的工具记为中断（`internal/app/state_test.go`）。
+- 自动化测试：补回跨仓库端到端互操作测试（`internal/rpc/interop_test.go`）与审批队列单测
+  （`internal/app/approval_test.go`）；互操作测试默认跳过，配置 `ADA_INTEROP_*` 才拉起真实 runtime。
 
 ### 1.4 当前原型暴露的边界
 
-- 同一进程内的多个 bot 共享 **agent preset、系统提示词、LLM provider 和供应商设置**；只有 session 是分开的。
-- replay provider 的游标是进程级的，第二个 bot 的 replay 会话会「脚本已用完」；真实 LLM 不受此限，但这说明
-  「同工作区多机器人」在 ada_go_v2 侧还缺 per-agent provider/prompt 隔离。
+- 同一进程内的多个 bot 共享 **agent preset、模型、LLM provider 和供应商设置**；session 与
+  system prompt 里的身份段按 bot 分开（名称/指令下一轮生效），模型/provider 仍要重启进程。
+- replay provider 的游标是进程级的，第二个 bot 的 replay 会话会「脚本已用完」；真实 LLM 不受此限，
+  但「同工作区多机器人」在 ada_go_v2 侧仍缺 per-agent provider 隔离。
 - 进程只有「启动/停止」两个隐式动作，没有 UI 面板、健康检查、重启策略、日志入口。
-- 偏好（名称、Enter、运行时/preset 路径、供应商设置）已写进 `config.json`；机器人、对话和进程状态仍只在内存，
-  重启后丢失。API Key 目前也明文存在该文件（0600），后续需要 keychain/DPAPI。
+- 审批只在 preset 装了 `seam-approval` 时可用；发布预设默认不装，因此默认仍是 fail-closed。
+- 偏好（名称、Enter、运行时/preset 路径、供应商设置）写进 `config.json`；机器人、对话与消息写进
+  `state.json`，重启后恢复。进程状态、审批进行中、窗口尺寸仍不落盘。API Key 目前明文存在
+  `config.json`（0600），后续需要 keychain/DPAPI。
+- 一个机器人可以有多条对话：右键「新建会话」会带新的 `sessionId`，runtime 为每条对话建独立 agent
+  session，新对话不继承旧对话的模型上下文；进程/preset/模型仍按工作区共享。
 
 ---
 
@@ -78,11 +94,11 @@
 
 | 职责 | 现状 | 需要补充 |
 |---|---|---|
-| 机器人注册表 | 仅内存，侧栏列表 | 持久化 bot 配置（名称/图标/工作目录/指令/预设）；编辑、复制、删除 |
+| 机器人注册表 | 内存 + `state.json` 持久化 | 编辑/复制/删除机器人、重命名工作区别名 |
 | 工作区进程管理 | 已有（同目录共享） | 进程面板：状态、pid、日志、启动/停止/重启；健康检查与退避重启 |
-| 对话体验 | 有基本对话与流式回写 | 会话持久化、搜索、导出；附件/文件引用；消息重试与取消的 UI |
+| 对话体验 | 有基本对话、流式回写与本地持久化 | 搜索、导出；附件/文件引用；消息重试与取消的 UI |
 | Runtime / 供应商配置 | 设置页已有 Agent 路径、preset、供应商/Endpoint/模型/API Key（持久化） | 再加运行时诊断、密钥安全存储（keychain）、per-agent 供应商覆盖 |
-| 审批/工具 | 工具卡片 UI 已有但没有事件来源 | 把 `tool/approval` 事件接入 RPC；审批弹窗、超时、拒绝原因 |
+| 审批/工具 | 工具卡片 + 审批弹窗已接入（`chat/approval` → `chat.approve`，超时 fail-closed） | 把审批按项目/角色配置；审批历史与审计视图 |
 | 身份与密钥 | 无 | 用户显示名；模型密钥进 OS keychain/秘密存储，不写日志 |
 | 系统集成 | 有窗口 | 单实例锁、托盘/开机启动、通知、关闭窗口时的进程策略 |
 | 安全边界 | 本地 token + pipe ACL | 进程权限、可执行文件签名/来源、工作目录授权提示 |
@@ -155,9 +171,9 @@
 
 ### 3.5 当前原型的直接缺口（来自实测）
 
-- 一个进程里多 bot 虽然分 session，但 **prompt/model/provider 是共享的**；replay 游标就是进程级，
-  第二个 bot 会耗尽脚本。要支持项目群组，ada_go_v2 必须把「agent 实例」做成显式对象，
-  不能只靠宿主切 session。
+- 一个进程里多 bot 已经按 session 分开 prompt 身份段，但 **model/provider 仍是共享的**；replay 游标
+  就是进程级，第二个 bot 会耗尽脚本。要支持项目群组，ada_go_v2 必须把「agent 实例」做成显式对象，
+  不能只靠宿主切 session/prompt。
 - ada_chat 侧没有项目/成员/群聊数据结构；现在只能「一个 bot 一条对话」。
 - 没有任务、审批、文件变更与活动视图，项目协作无法闭环。
 
@@ -183,8 +199,8 @@
 
 1. **Runtime / 供应商配置与进程面板**：设置页的 Agent 路径/preset/供应商已落地并持久化；下一步补
    运行中实例、pid、日志、重启按钮与运行时诊断，以及 API Key 的安全存储。
-2. **持久化**：机器人、对话、设置、最近工作区、窗口状态；重启后恢复。会话存储优先放宿主，
-   turn/tool 记录可由 ada_go_v2 的 session 提供。
+2. **持久化**：机器人、对话、设置、最近工作区已落盘并恢复；剩余窗口状态、审批历史与会话搜索/导出。
+   会话存储优先放宿主，turn/tool 记录可由 ada_go_v2 的 session 提供。
 3. **显式 agent/session 协议**：`agent.list`、`session.create`、`chat.send` 带 agentId/sessionId；
    agent 配置从宿主传入（替代装配期 patch manifest）。
 4. **事件回传**：tool 开始/结果、错误、审批请求/响应、取消；接到现有工具卡片与审批 UI。
@@ -214,13 +230,14 @@
 
 ## 6. 当前验证与未验证
 
-- 已验证：`go build ./...`、`go vet ./...`；临时探针确认同工作区两机器人一个进程；
+- 已验证：`go build ./...`、`go vet ./...`；跨仓库互操作测试（`internal/rpc/interop_test.go`，
+  需要 `ADA_INTEROP_*`）覆盖握手/`bot.info`/`chat.send`/事件流、每 session 的身份替换与审批往返；
+  审批队列另有 `internal/app/approval_test.go`；临时探针确认同工作区两机器人一个进程；
   外部 runtime（`ada-rpc-agent` + replay preset）能读工作目录 `a.txt` 并返回真实回答；
   移除一个机器人不杀进程，移除最后一个杀进程。
-- 未验证 / 未实现：多 bot 在共享进程下的独立 persona/provider（replay 耗尽暴露了这一点）；
-  工具/审批事件；持久化；进程面板；群聊/项目模型；自动化测试。
-- 本轮删除了所有 `*_test.go`、`testdata/preview` 和固定演示数据；代码库现在是可运行的空壳，
-  需要靠外部 runtime 才能产生回答。
+- 未验证 / 未实现：多 bot 在共享进程下的独立 model/provider（replay 耗尽暴露了这一点）；
+  发布预设的审批（默认未启用）；窗口状态与审批历史持久化；进程面板；群聊/项目模型；chat 侧 TLS/远程传输。
+- 自动化测试仍然很少（只有上面两组）；其余靠 `go build`、`go vet` 与临时探针。
 
 ## 7. 待确认的产品决策
 

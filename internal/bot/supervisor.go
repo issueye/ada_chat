@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,9 @@ type Supervisor struct {
 	// cancels 保存每一轮正在进行的 RPC 调用；canceled 标记由用户主动终止的轮次。
 	cancels  map[int]context.CancelFunc
 	canceled map[int]bool
+	// notify 把 runtime 的 chat/error 事件接到发起该轮调用的 goroutine，避免同一失败
+	// 又被 RPC 错误写一遍（事件帧先于响应帧到达）。
+	notify map[int]chan struct{}
 }
 
 type instance struct {
@@ -72,6 +76,7 @@ func NewSupervisor(a *app.App) (*Supervisor, error) {
 		instances: map[string]*instance{},
 		cancels:   map[int]context.CancelFunc{},
 		canceled:  map[int]bool{},
+		notify:    map[int]chan struct{}{},
 	}, nil
 }
 
@@ -372,6 +377,24 @@ func (s *Supervisor) events(r *instance, p rpc.Peer) {
 					s.app.BotTurnDone(id, d.Turn, "")
 				}
 			}
+		case "chat/approval":
+			var d struct {
+				Turn      int    `json:"turn"`
+				ID        string `json:"id"`
+				Source    string `json:"source"`
+				Op        string `json:"op"`
+				Target    string `json:"target"`
+				Reason    string `json:"reason"`
+				TimeoutMS int64  `json:"timeoutMs"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 && d.ID != "" {
+				if id := s.turnOwner(r, d.Turn); id > 0 {
+					s.app.BotApproval(id, d.Turn, app.Approval{
+						ID: d.ID, Source: d.Source, Op: d.Op, Target: d.Target, Reason: d.Reason,
+						Timeout: time.Duration(d.TimeoutMS) * time.Millisecond,
+					})
+				}
+			}
 		case "chat/error":
 			var d struct {
 				Turn   int    `json:"turn"`
@@ -379,7 +402,11 @@ func (s *Supervisor) events(r *instance, p rpc.Peer) {
 			}
 			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 {
 				if id := s.turnOwner(r, d.Turn); id > 0 {
+					if d.Reason == "" {
+						d.Reason = "agent 运行失败"
+					}
 					s.app.BotTurnFailed(id, d.Turn, d.Reason)
+					s.signalNotified(d.Turn)
 				}
 			}
 		}
@@ -434,8 +461,8 @@ func (s *Supervisor) failed(r *instance, reason string) {
 }
 
 // Send asks the workspace's process to answer one turn; events stream back to
-// the bot that owns the turn.
-func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
+// the bot that owns the turn. sessionID 标识宿主侧的对话，runtime 按它隔离 agent session。
+func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) error {
 	key := workspaceKey(b.Workspace)
 	s.mu.Lock()
 	r := s.instances[key]
@@ -455,6 +482,7 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
 	}
 	s.mu.Lock()
 	r.turns[turn] = b.ID
+	s.notify[turn] = make(chan struct{}, 1)
 	s.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -468,6 +496,7 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
 			s.mu.Lock()
 			delete(s.cancels, turn)
 			delete(s.canceled, turn)
+			delete(s.notify, turn)
 			s.mu.Unlock()
 		}()
 		p, reason := s.waitPeer(r, 10*time.Second)
@@ -487,6 +516,7 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
 		params := map[string]any{
 			"turn": turn, "text": text,
 			"botId": b.ID, "botName": b.Name, "instruction": b.Instruction,
+			"sessionId": strconv.Itoa(sessionID),
 		}
 		err := p.Call(ctx, "chat.send", params, &res)
 		manual := s.takeCanceled(turn)
@@ -496,8 +526,11 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
 			return
 		}
 		if err != nil {
-			// rpc-json 的 EINTERNAL 只有一句“agent 运行失败”，真正的原因在
-			// 机器人自己的日志里；把最后一行带回对话，省去用户翻日志。
+			// runtime 在返回错误前会发 chat/error，事件已把可读原因写进对话；
+			// 只有没等到事件（进程断开等）才回落到 RPC 错误 + 机器人日志末行。
+			if s.wasNotified(turn) {
+				return
+			}
 			reason := errText(err)
 			if tail := logTail(r.log); tail != "" {
 				reason += "；" + tail
@@ -533,6 +566,63 @@ func (s *Supervisor) takeCanceled(turn int) bool {
 	delete(s.canceled, turn)
 	s.mu.Unlock()
 	return v
+}
+
+// signalNotified 把 chat/error 已经处理过的轮次告诉 Send；事件帧先于响应帧到达。
+func (s *Supervisor) signalNotified(turn int) {
+	s.mu.Lock()
+	ch := s.notify[turn]
+	s.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// wasNotified 等一小会儿确认本轮是否已由 chat/error 写过失败原因。
+func (s *Supervisor) wasNotified(turn int) bool {
+	s.mu.Lock()
+	ch := s.notify[turn]
+	s.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	case <-time.After(250 * time.Millisecond):
+		return false
+	}
+}
+
+// Approve 回答机器人进程的一次升级审批；请求只能经它所属的工作区进程送达。
+func (s *Supervisor) Approve(botID int, id string, allow bool, reason string) error {
+	bot := s.app.BotByID(botID)
+	if bot == nil {
+		return errors.New("机器人不存在")
+	}
+	key := workspaceKey(bot.Workspace)
+	s.mu.Lock()
+	r := s.instances[key]
+	s.mu.Unlock()
+	if r == nil {
+		return errors.New("这个工作区的机器人进程还没有运行")
+	}
+	p, why := s.waitPeer(r, 2*time.Second)
+	if p == nil {
+		return errors.New(why)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := p.Call(ctx, "chat.approve", map[string]any{
+		"id": id, "allow": allow, "reason": reason,
+	}, nil); err != nil {
+		return fmt.Errorf("提交审批结果失败: %w", err)
+	}
+	return nil
 }
 
 func (s *Supervisor) waitPeer(r *instance, timeout time.Duration) (rpc.Peer, string) {

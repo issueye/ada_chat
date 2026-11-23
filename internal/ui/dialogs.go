@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	mui "github.com/egoist/mygo/ui"
@@ -380,4 +382,57 @@ func (u *UI) deleteDialog(c *mui.Context) {
 			svc.Invalidate()
 		},
 	})
+}
+
+// approvalDialog 显示 runtime 发来的升级审批请求：允许/拒绝都会把结果回给 runtime，
+// 超时未答复时 runtime 自己按拒绝处理（fail-closed）。
+func (u *UI) approvalDialog(c *mui.Context) {
+	if len(u.App.Approvals) == 0 {
+		u.approvalUp = false
+		return
+	}
+	ap := u.App.Approvals[0]
+	tk := theme.TokensOf(c)
+	u.approvalUp = true
+	ok := feedback.Modal(c, &u.approvalUp, feedback.ModalProps{
+		Title: "需要审批", Width: 480, OkText: "允许一次", CancelText: "拒绝",
+	}, func() {
+		botName := "机器人"
+		if b := u.App.BotByID(ap.BotID); b != nil {
+			botName = b.Name
+		}
+		mui.Column(c).Gap(6).Children(func() {
+			mui.Text(c, ap.Reason).FontSize(14).TextColor(tk.Text)
+			detail := botName + " · " + ap.Source
+			if ap.Target != "" {
+				detail += " · " + ap.Target
+			}
+			mui.Text(c, detail).FontSize(12).TextColor(tk.TextTertiary)
+			if ap.Timeout > 0 {
+				mui.Text(c, fmt.Sprintf("超时未答复会按拒绝处理（%s）。", ap.Timeout.Round(time.Second))).
+					FontSize(12).TextColor(tk.TextTertiary)
+			}
+		})
+	})
+	decide := func(allow bool) {
+		reason := "用户允许"
+		if !allow {
+			reason = "用户拒绝"
+		}
+		if err := u.App.DecideApproval(ap.ID, allow, reason); err != nil {
+			feedback.ShowToast(c, feedback.ToastProps{
+				Title: "审批未送达", Description: err.Error(), Type: feedback.ToastError,
+			})
+		}
+		u.approvalUp = false
+		c.Invalidate()
+	}
+	if ok {
+		decide(true)
+		return
+	}
+	// 取消/关闭按钮会把开关置回 false；仍为 true 表示面板还开着。
+	if !u.approvalUp {
+		decide(false)
+	}
 }

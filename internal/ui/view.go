@@ -31,6 +31,7 @@ type UI struct {
 	renameUp    bool
 	renameDraft string
 	confirmDel  bool
+	approvalUp  bool
 
 	botDraft  app.Bot
 	botEditID int
@@ -84,6 +85,7 @@ func (u *UI) Root(c *mui.Context) {
 		u.renameDialog(c)
 		u.deleteDialog(c)
 		u.botDialog(c)
+		u.approvalDialog(c)
 		feedback.ToastHost(c, feedback.ToastHostProps{})
 	})
 }

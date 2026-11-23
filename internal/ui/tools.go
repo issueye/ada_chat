@@ -93,7 +93,8 @@ func toolCard(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
 
 func toolStatus(c *mui.Context, call *app.ToolCall) {
 	if call.State == app.ToolRunning {
-		feedback.Spin(c, feedback.SpinProps{CustomSize: 11}, nil)
+		// Spin 自带 AlignSelf(Start);在居中行里要改回 Center，否则会和“运行中”文字错位。
+		feedback.Spin(c, feedback.SpinProps{CustomSize: 11}, nil).AlignSelf(mui.Center)
 		display.Tag(c, "运行中", display.TagProps{Variant: display.TagBorderless, Color: display.TagProcessing, Size: theme.Small})
 		return
 	}
