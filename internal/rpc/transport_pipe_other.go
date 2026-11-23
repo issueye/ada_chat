@@ -13,7 +13,3 @@ type pipeUnsupported struct{}
 func (pipeUnsupported) Dial(context.Context, Address) (Stream, error) {
 	return nil, Unimplemented("rpc-pipe 只在 Windows 上可用")
 }
-
-func (pipeUnsupported) Listen(context.Context, Address, ListenOptions) (Listener, error) {
-	return nil, Unimplemented("rpc-pipe 只在 Windows 上可用")
-}

@@ -1,6 +1,7 @@
-// Package rpc implements the seam/rpc P0–P2 protocol from docs/seam-rpc.md:
-// address parsing, transport registry, the v1 JSON frame protocol (challenge/auth,
-// calls, events, cancel, ping), and tcp/unix/pipe transports.
+// Package rpc implements the client half of the seam/rpc P0–P2 protocol from
+// docs/seam-rpc.md: address parsing, transport registry, the v1 JSON frame
+// protocol (challenge/auth, calls, events, cancel, ping), and tcp/unix/pipe
+// dialers. The server half lives in ada_go's rpc-json provider.
 //
 // ada_chat has no plugin kernel, so the seam/provider split is kept by file and
 // type boundaries instead of separate plugin packages: this package holds the
@@ -14,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -155,28 +155,11 @@ type Stream interface {
 	SetDeadline(t time.Time) error
 }
 
-// Transport is one transport implementation.
+// Transport is one transport implementation. The chat side is a client only:
+// hosts dial the agent runtime, they never accept RPC connections.
 type Transport interface {
 	Dial(ctx context.Context, addr Address) (Stream, error)
-	Listen(ctx context.Context, addr Address, opts ListenOptions) (Listener, error)
 }
-
-// Listener accepts transport connections.
-type Listener interface {
-	Accept(ctx context.Context) (Stream, error)
-	Addr() Address
-	Close() error
-}
-
-// ListenOptions holds transport-only options.
-type ListenOptions struct {
-	Perm        os.FileMode
-	RemoveStale bool
-	MaxConns    int
-}
-
-// Handler is an inbound method; params is raw JSON decoded by the method.
-type Handler func(ctx context.Context, params []byte) (any, error)
 
 // Event is a server-pushed event.
 type Event struct {
@@ -195,24 +178,8 @@ type Peer interface {
 	Close() error
 }
 
-// Server is an inbound RPC service.
-type Server interface {
-	Handle(method string, h Handler) (func(), error)
-	Publish(topic string, data any) error
-	Serve(ctx context.Context) error
-	Stats() Stats
-	Close() error
-}
-
-// Stats holds read-only diagnostics.
-type Stats struct {
-	Listeners []Address `json:"listeners,omitempty"`
-	Conns     int       `json:"conns"`
-	Inflight  int       `json:"inflight"`
-	FramesIn  uint64    `json:"framesIn"`
-	FramesOut uint64    `json:"framesOut"`
-	EventsOut uint64    `json:"eventsOut"`
-}
+// Server is absent on purpose: the chat host is an RPC client. The desktop
+// bridge in ada_go (cmd/ada-rpc-agent) owns the server half of the protocol.
 
 // AuthMode selects how peers prove themselves.
 type AuthMode string
@@ -230,15 +197,6 @@ type Auth struct {
 	AllowInsecure bool
 }
 
-// Limits are protocol limits; zero values are filled with defaults.
-type Limits struct {
-	MaxFrameBytes  int
-	MaxParamsBytes int
-	MaxInflight    int
-	MaxEventQueue  int
-	MaxConns       int
-}
-
 // DialOptions are client options.
 type DialOptions struct {
 	Client  string
@@ -246,15 +204,7 @@ type DialOptions struct {
 	Timeout time.Duration
 }
 
-// ServerOptions are server options.
-type ServerOptions struct {
-	Auth    Auth
-	Limits  Limits
-	PeerIDs []string
-	Timeout time.Duration
-}
-
-// Service dials and listens using registered transports.
+// Service dials using registered transports.
 type Service struct {
 	transports map[Network]Transport
 }
@@ -282,6 +232,3 @@ func (s *Service) Transport(n Network) (Transport, bool) {
 	t, ok := s.transports[n]
 	return t, ok
 }
-
-// EventObserve is the observation event name (observation is not a gate).
-const EventObserve = "rpc/observe"
