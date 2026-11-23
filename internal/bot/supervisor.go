@@ -31,6 +31,9 @@ type Supervisor struct {
 	instances map[string]*instance
 	nextID    int
 	closing   atomic.Bool
+	// cancels 保存每一轮正在进行的 RPC 调用；canceled 标记由用户主动终止的轮次。
+	cancels  map[int]context.CancelFunc
+	canceled map[int]bool
 }
 
 type instance struct {
@@ -64,7 +67,12 @@ func NewSupervisor(a *app.App) (*Supervisor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Supervisor{app: a, svc: svc, args: args, instances: map[string]*instance{}}, nil
+	return &Supervisor{
+		app: a, svc: svc, args: args,
+		instances: map[string]*instance{},
+		cancels:   map[int]context.CancelFunc{},
+		canceled:  map[int]bool{},
+	}, nil
 }
 
 // runtimeArgs parses ADA_BOT_RUNTIME_ARGS as a JSON array of strings.
@@ -327,6 +335,34 @@ func (s *Supervisor) events(r *instance, p rpc.Peer) {
 					s.app.BotDelta(id, d.Turn, d.Text)
 				}
 			}
+		case "chat/reasoning":
+			var d struct {
+				Turn int    `json:"turn"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 && d.Text != "" {
+				if id := s.turnOwner(r, d.Turn); id > 0 {
+					s.app.BotReasoning(id, d.Turn, d.Text)
+				}
+			}
+		case "chat/tool":
+			var d struct {
+				Turn       int    `json:"turn"`
+				ID         string `json:"id"`
+				Name       string `json:"name"`
+				Args       string `json:"args"`
+				Status     string `json:"status"`
+				Text       string `json:"text"`
+				DurationMS int64  `json:"durationMs"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 && d.ID != "" {
+				if id := s.turnOwner(r, d.Turn); id > 0 {
+					s.app.BotTool(id, d.Turn, app.ToolEvent{
+						ID: d.ID, Name: d.Name, Args: d.Args, Status: d.Status, Text: d.Text,
+						Duration: time.Duration(d.DurationMS) * time.Millisecond,
+					})
+				}
+			}
 		case "chat/done":
 			var d struct {
 				Turn int `json:"turn"`
@@ -403,21 +439,47 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
 	key := workspaceKey(b.Workspace)
 	s.mu.Lock()
 	r := s.instances[key]
+	s.mu.Unlock()
 	if r == nil {
+		// 进程实例不在（上一轮启动失败或状态失配）时，Send 自己补一次启动，
+		// 不让第一条消息落在“机器人进程还没有运行”上。
+		if err := s.Start(b); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		r = s.instances[key]
 		s.mu.Unlock()
+	}
+	if r == nil {
 		return errors.New("这个工作区的机器人进程还没有运行")
 	}
+	s.mu.Lock()
 	r.turns[turn] = b.ID
 	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	s.mu.Lock()
+	s.cancels[turn] = cancel
+	s.mu.Unlock()
+
 	go func() {
+		defer func() {
+			cancel()
+			s.mu.Lock()
+			delete(s.cancels, turn)
+			delete(s.canceled, turn)
+			s.mu.Unlock()
+		}()
 		p, reason := s.waitPeer(r, 10*time.Second)
 		if p == nil {
 			s.forgetTurn(r, turn)
+			if s.takeCanceled(turn) {
+				s.app.BotTurnDone(b.ID, turn, "")
+				return
+			}
 			s.app.BotTurnFailed(b.ID, turn, reason)
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
 		var res struct {
 			Turn int    `json:"turn"`
 			Text string `json:"text"`
@@ -427,14 +489,50 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string) error {
 			"botId": b.ID, "botName": b.Name, "instruction": b.Instruction,
 		}
 		err := p.Call(ctx, "chat.send", params, &res)
+		manual := s.takeCanceled(turn)
 		s.forgetTurn(r, turn)
+		if manual {
+			s.app.BotTurnDone(b.ID, turn, "")
+			return
+		}
 		if err != nil {
-			s.app.BotTurnFailed(b.ID, turn, errText(err))
+			// rpc-json 的 EINTERNAL 只有一句“agent 运行失败”，真正的原因在
+			// 机器人自己的日志里；把最后一行带回对话，省去用户翻日志。
+			reason := errText(err)
+			if tail := logTail(r.log); tail != "" {
+				reason += "；" + tail
+			}
+			s.app.BotTurnFailed(b.ID, turn, reason)
 			return
 		}
 		s.app.BotTurnDone(b.ID, turn, res.Text)
 	}()
 	return nil
+}
+
+// Cancel 终止某轮正在进行的 RPC 调用；取消标记让 Send 把这次失败当作“用户停止”，
+// 而不是写一条错误到对话里。
+func (s *Supervisor) Cancel(botID, turn int) error {
+	_ = botID
+	s.mu.Lock()
+	cancel := s.cancels[turn]
+	if cancel != nil {
+		s.canceled[turn] = true
+	}
+	s.mu.Unlock()
+	if cancel == nil {
+		return errors.New("这一轮已经结束")
+	}
+	cancel()
+	return nil
+}
+
+func (s *Supervisor) takeCanceled(turn int) bool {
+	s.mu.Lock()
+	v := s.canceled[turn]
+	delete(s.canceled, turn)
+	s.mu.Unlock()
+	return v
 }
 
 func (s *Supervisor) waitPeer(r *instance, timeout time.Duration) (rpc.Peer, string) {

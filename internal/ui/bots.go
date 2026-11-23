@@ -126,9 +126,42 @@ func (u *UI) botRow(c *mui.Context, tk *theme.Tokens, b *app.Bot, active bool) {
 		})
 		mui.Box(c).Size(7, 7).Shrink(0).Radius(4).Background(botStateColor(tk, b.State))
 	})
+	u.botContextMenu(c, row, b)
 	if row.Clicked() {
 		u.App.OpenBotChat(b.ID)
 	}
+}
+
+// botContextMenu 让机器人的侧栏行可以右键：编辑资料，或重启它的进程。
+func (u *UI) botContextMenu(c *mui.Context, row mui.Element, b *app.Bot) {
+	startLabel := "重启进程"
+	if b.State == app.BotStopped || b.State == app.BotError {
+		startLabel = "启动进程"
+	}
+	items := []overlay.MenuItem{
+		{Key: "edit", Label: "编辑信息", Icon: lucide.Pencil()},
+		{Key: "restart", Label: startLabel, Icon: lucide.RefreshCw(), Disabled: b.State == app.BotStarting},
+	}
+	chosen := overlay.ContextMenu(c, row, overlay.DropdownMenuProps{Items: items})
+	switch chosen {
+	case "edit":
+		u.openBotEdit(b)
+	case "restart":
+		u.restartBot(c, b)
+	}
+}
+
+func (u *UI) restartBot(c *mui.Context, b *app.Bot) {
+	if b.State == app.BotStarting {
+		return
+	}
+	if b.State == app.BotRunning {
+		u.App.StopBot(b.ID)
+	}
+	u.App.StartBot(b.ID)
+	feedback.ShowToast(c, feedback.ToastProps{
+		Title: "机器人进程已重启", Description: b.Name, Type: feedback.ToastSuccess,
+	})
 }
 
 func botTooltip(b *app.Bot) string {
@@ -171,6 +204,7 @@ func botStateColor(tk *theme.Tokens, s app.BotState) mui.Color {
 // openBotDialog 每次都从空白开始，只带上最近的工作目录和默认图标。
 func (u *UI) openBotDialog() {
 	icon := botGlyphs[0].key
+	u.botEditID = 0
 	u.botDraft = app.Bot{
 		Workspace: u.App.Workspace,
 		Icon:      icon,
@@ -181,27 +215,60 @@ func (u *UI) openBotDialog() {
 	u.botUp = true
 }
 
+// openBotEdit 用现有机器人的资料填满同一个表单；保存走 UpdateBot。
+func (u *UI) openBotEdit(b *app.Bot) {
+	if b == nil {
+		return
+	}
+	u.botEditID = b.ID
+	u.botDraft = app.Bot{
+		Name:        b.Name,
+		Description: b.Description,
+		Instruction: b.Instruction,
+		Workspace:   b.Workspace,
+		Icon:        b.Icon,
+		Color:       b.Color,
+	}
+	u.botErr = ""
+	u.botDirErr = ""
+	u.botUp = true
+}
+
 func (u *UI) botDialog(c *mui.Context) {
 	tk := theme.TokensOf(c)
-	if u.botErr != "" && strings.TrimSpace(u.botDraft.Name) != "" {
-		u.botErr = ""
-	}
-	if u.botDirErr != "" && strings.TrimSpace(u.botDraft.Workspace) != "" {
-		u.botDirErr = ""
-	}
 	u.botDraft.Color = botGlyphColor(u.botDraft.Icon)
+	title, okText := "添加机器人", "创建"
+	if u.botEditID != 0 {
+		title, okText = "编辑机器人", "保存"
+	}
 	ok := feedback.Modal(c, &u.botUp, feedback.ModalProps{
-		Title: "添加机器人", Width: 560, OkText: "创建", CancelText: "取消",
+		Title: title, Width: 560, OkText: okText, CancelText: "取消",
 	}, func() {
 		u.botFormBody(c, tk)
 	})
 	if !ok {
 		return
 	}
+	// 每次提交都从干净的错误状态开始，失败原因只保留到下一次提交。
+	u.botErr, u.botDirErr = "", ""
 	u.botDraft.Name = strings.TrimSpace(u.botDraft.Name)
 	if u.botDraft.Name == "" {
 		u.botErr = "给它起个名字，侧栏里才认得出来"
 		c.Invalidate()
+		return
+	}
+	if u.botEditID != 0 {
+		bot, err := u.App.UpdateBot(u.botEditID, u.botDraft)
+		if err != nil {
+			u.botDirErr = err.Error()
+			c.Invalidate()
+			return
+		}
+		u.botUp = false
+		u.botEditID = 0
+		feedback.ShowToast(c, feedback.ToastProps{
+			Title: "机器人信息已更新", Description: bot.Name, Type: feedback.ToastSuccess,
+		})
 		return
 	}
 	bot, err := u.App.AddBot(u.botDraft)
@@ -221,6 +288,10 @@ func (u *UI) botFormBody(c *mui.Context, tk *theme.Tokens) {
 	d := &u.botDraft
 	mui.Column(c).Gap(16).Children(func() {
 		u.botPreview(c, tk)
+		if u.botEditID != 0 {
+			mui.Text(c, "改名与图标立即生效；工作目录改动会重启该机器人的进程；系统提示词在下一次进程启动时生效。").
+				FontSize(11).TextColor(tk.TextTertiary)
+		}
 		mui.Column(c).Gap(12).Children(func() {
 			botField(c, tk, "名称", true, "侧栏和对话里都用这个名字", func() {
 				field.Input(c, &d.Name, field.InputProps{

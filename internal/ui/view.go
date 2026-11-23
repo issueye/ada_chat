@@ -33,6 +33,7 @@ type UI struct {
 	confirmDel  bool
 
 	botDraft  app.Bot
+	botEditID int
 	botErr    string
 	botDirErr string
 	botUp     bool

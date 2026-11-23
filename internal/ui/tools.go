@@ -16,23 +16,52 @@ import (
 	"ada_chat/internal/app"
 )
 
-func toolIcon(key string) *mui.SVG {
-	_ = key
+func toolIcon(name string) *mui.SVG {
+	switch name {
+	case "run_shell":
+		return lucide.Terminal()
+	case "read_file":
+		return lucide.FileText()
+	case "write_file", "edit_file":
+		return lucide.Pencil()
+	case "search_files":
+		return lucide.Search()
+	case "list_dir":
+		return lucide.Folder()
+	}
 	return lucide.Wrench()
+}
+
+// toolByID 在一轮回答里找到卡片对应的调用，供按 Part 顺序渲染使用。
+func toolByID(m *app.Message, id string) *app.ToolCall {
+	for _, call := range m.Tools {
+		if call.ID == id {
+			return call
+		}
+	}
+	return nil
+}
+
+// toolKey 让同一轮里不同工具的折叠状态互不影响。
+func toolKey(call *app.ToolCall) string {
+	if call.ID != "" {
+		return "tool:" + call.ID
+	}
+	return "tool:" + call.Name
 }
 
 // toolCard 是对话里的一次工具调用：一行标题（工具名、状态、耗时），展开后是参数和结果。
 func toolCard(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
-	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).AlignSelf(mui.Stretch).Clip()
+	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).AlignSelf(mui.Stretch).FillWidth().Clip()
 	card.Children(func() {
-		p := mui.CollapsibleBase(c.Key(call.ID), &call.Open)
+		p := mui.CollapsibleBase(c.Key(toolKey(call)), &call.Open)
 		tr := p.Trigger.Label(call.Name).Row().FillWidth().Padding(10, 12).Gap(8).AlignItems(mui.Center).
 			Cursor(mui.CursorPointer).Unselectable()
 		if tr.Hovered() {
 			tr.Background(tk.FillTertiary)
 		}
 		tr.Children(func() {
-			mui.Icon(c, toolIcon(call.Key)).FontSize(14).TextColor(tk.TextSecondary)
+			mui.Icon(c, toolIcon(call.Name)).FontSize(14).TextColor(tk.TextSecondary)
 			mui.Text(c, call.Name).FontSize(13).FontWeight(600).TextColor(tk.Text)
 			toolStatus(c, call)
 			mui.Spacer(c)

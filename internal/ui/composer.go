@@ -85,6 +85,20 @@ func attachButton(c *mui.Context) {
 }
 
 func (u *UI) sendButton(c *mui.Context, tk *theme.Tokens) {
+	// 机器人还在生成时，同一个按钮变成“停止生成”：RPC 取消这一轮，消息留在原地。
+	if u.App.Busy() {
+		b := mui.ButtonBase(c).Label("停止生成").Size(32, 32).Radius(16).Center().Cursor(mui.CursorPointer)
+		bg := tk.Primary
+		if b.Hovered() {
+			bg = tk.PrimaryHover
+		}
+		b.Background(bg).TextColor(tk.PrimaryForeground)
+		b.Children(func() { mui.Icon(c, lucide.Square()).FontSize(12) })
+		if b.Clicked() && u.App.StopTurn() {
+			feedback.ShowToast(c, feedback.ToastProps{Title: "已停止生成", Type: feedback.ToastInfo})
+		}
+		return
+	}
 	empty := strings.TrimSpace(u.App.Draft) == ""
 	b := mui.ButtonBase(c).Label("发送").Size(32, 32).Radius(16).Center().Disabled(empty).Cursor(mui.CursorPointer)
 	bg := tk.Primary

@@ -154,17 +154,28 @@ func (u *UI) conversationMenu(c *mui.Context, s *app.Session) {
 	if s.Pinned {
 		pinLabel, pinIcon = "取消置顶", lucide.PinOff()
 	}
-	items := []overlay.MenuItem{
-		{Key: "pin", Label: pinLabel, Icon: pinIcon},
-		{Key: "rename", Label: "重命名", Icon: lucide.Pencil()},
-		{Key: "copy", Label: "复制对话", Icon: lucide.Copy()},
-		{Key: "divider", Divider: true},
-		{Key: "delete", Label: "删除对话", Icon: lucide.Trash2(), Danger: true},
+	items := make([]overlay.MenuItem, 0, 6)
+	if u.App.Busy() {
+		items = append(items,
+			overlay.MenuItem{Key: "stop", Label: "停止生成", Icon: lucide.Square()},
+			overlay.MenuItem{Divider: true},
+		)
 	}
+	items = append(items,
+		overlay.MenuItem{Key: "pin", Label: pinLabel, Icon: pinIcon},
+		overlay.MenuItem{Key: "rename", Label: "重命名", Icon: lucide.Pencil()},
+		overlay.MenuItem{Key: "copy", Label: "复制对话", Icon: lucide.Copy()},
+		overlay.MenuItem{Divider: true},
+		overlay.MenuItem{Key: "delete", Label: "删除对话", Icon: lucide.Trash2(), Danger: true},
+	)
 	chosen := overlay.DropdownMenu(c, &u.chatMenu, overlay.DropdownMenuProps{Items: items}, func(t mui.Element) {
 		action.StyleActionIcon(c, t, lucide.Ellipsis(), action.ActionIconProps{Size: theme.Small, Title: "对话操作", Active: u.chatMenu})
 	})
 	switch chosen {
+	case "stop":
+		if u.App.StopTurn() {
+			feedback.ShowToast(c, feedback.ToastProps{Title: "已停止生成", Type: feedback.ToastInfo})
+		}
 	case "pin":
 		s.Pinned = !s.Pinned
 	case "rename":
@@ -276,25 +287,86 @@ func (u *UI) assistantMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) 
 					display.Text(c, "思考中", display.TextProps{Type: display.TextSecondary, FontSize: 11, Shiny: true})
 				}
 			})
-			if len(m.Tools) > 0 {
-				mui.Column(c).Gap(8).Children(func() {
-					for _, call := range m.Tools {
-						toolCard(c, tk, call)
+			if len(m.Parts) > 0 {
+				// 按真实顺序渲染：模型可能先写一句话，再调用工具，工具之后再继续写。
+				mui.Column(c).Gap(6).Children(func() {
+					for i, part := range m.Parts {
+						switch part.Kind {
+						case app.PartTool:
+							if call := toolByID(m, part.ToolID); call != nil {
+								toolCard(c, tk, call)
+							}
+						case app.PartText:
+							if strings.TrimSpace(part.Text) == "" {
+								continue
+							}
+							// 只有最后一段文本还在流入时做打字动画；被工具打断的那段已经定型。
+							animated := m.Streaming && i == len(m.Parts)-1
+							markdown.Markdown(c, part.Text, markdown.MarkdownProps{
+								Variant:  markdown.Chat,
+								Animated: animated,
+							})
+						case app.PartReasoning:
+							if strings.TrimSpace(part.Text) == "" {
+								continue
+							}
+							u.reasoningCard(c, tk, m, i, &m.Parts[i], m.Streaming && i == len(m.Parts)-1)
+						}
 					}
 				})
-			}
-			switch {
-			case m.Text == "" && m.Streaming && len(m.Tools) == 0:
-				feedback.Spin(c, feedback.SpinProps{Size: theme.Small, Variant: feedback.SpinNetwork}, nil)
-			case m.Text != "":
-				markdown.Markdown(c, m.Text, markdown.MarkdownProps{
-					Variant:  markdown.Chat,
-					Animated: m.Streaming,
-				})
+			} else {
+				if len(m.Tools) > 0 {
+					mui.Column(c).Gap(8).Children(func() {
+						for _, call := range m.Tools {
+							toolCard(c, tk, call)
+						}
+					})
+				}
+				switch {
+				case m.Text == "" && m.Streaming && len(m.Tools) == 0:
+					feedback.Spin(c, feedback.SpinProps{Size: theme.Small, Variant: feedback.SpinNetwork}, nil)
+				case m.Text != "":
+					markdown.Markdown(c, m.Text, markdown.MarkdownProps{
+						Variant:  markdown.Chat,
+						Animated: m.Streaming,
+					})
+				}
 			}
 			if !m.Streaming {
 				u.messageActions(c, m)
 			}
+		})
+	})
+}
+
+// reasoningCard 显示模型这一段思考内容：默认展开，用户也可以收起；思考流式进行时带 spinner。
+func (u *UI) reasoningCard(c *mui.Context, tk *theme.Tokens, m *app.Message, index int, part *app.Part, streaming bool) {
+	p := mui.CollapsibleBase(c.Key("reasoning:"+strconv.Itoa(m.ID)+":"+strconv.Itoa(index)), &part.Open)
+	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).AlignSelf(mui.Stretch).FillWidth().Clip()
+	card.Background(tk.FillQuaternary)
+	card.Children(func() {
+		tr := p.Trigger.Label("思考过程").Row().FillWidth().Padding(8, 12).Gap(8).AlignItems(mui.Center).
+			Cursor(mui.CursorPointer).Unselectable()
+		if tr.Hovered() {
+			tr.Background(tk.FillTertiary)
+		}
+		tr.Children(func() {
+			mui.Icon(c, lucide.Brain()).FontSize(14).TextColor(tk.TextTertiary)
+			mui.Text(c, "思考过程").FontSize(12).FontWeight(500).TextColor(tk.TextSecondary)
+			if streaming {
+				feedback.Spin(c, feedback.SpinProps{CustomSize: 10}, nil)
+			}
+			mui.Spacer(c)
+			mui.Icon(c, lucide.ChevronDown()).FontSize(14).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
+		})
+		p.Panel(func() {
+			mui.Column(c).Padding(0, 12, 10, 12).Children(func() {
+				markdown.Markdown(c, part.Text, markdown.MarkdownProps{
+					Variant:  markdown.Chat,
+					FontSize: 13,
+					Animated: streaming,
+				})
+			})
 		})
 	})
 }

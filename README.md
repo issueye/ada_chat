@@ -55,6 +55,10 @@ go run ./cmd/ada_chat
 
 首次启动是空工作台；点「添加机器人」，选择、输入或浏览一个**工作目录**，再发送第一条消息。
 
+右键侧栏里的机器人可以「编辑信息」：名称、介绍、系统提示词、图标与工作目录都在同一个表单里，
+也可以从同一个菜单「启动/重启进程」。改名与图标立即生效；工作目录改动会重启该机器人的进程；
+系统提示词在新进程启动时重新装配。
+
 ```bat
 build.bat        :: 构建 bin\ada_chat.exe；双击时结束后暂停
 build.bat -q     :: 构建后直接返回
@@ -72,7 +76,7 @@ ada_chat/
 ├── internal/
 │   ├── app/                    # 状态与行为（只依赖标准库）
 │   │   ├── app.go              # 机器人、会话、消息、偏好、RPC 回写
-│   │   └── tools.go            # 工具调用类型（等 agent 事件）
+│   │   └── tools.go            # 工具调用类型与 chat/tool 状态
 │   ├── rpc/                    # seam RPC v1：帧/握手/调用/事件/取消/心跳 + 传输
 │   ├── bot/                    # 工作区进程管理
 │   │   ├── supervisor.go       # 工作目录 → 一个进程/一个 peer；bot 是成员
@@ -118,7 +122,30 @@ RPC 方法：
 | 方法 | 参数 | 结果/事件 |
 |---|---|---|
 | `bot.info` | — | `{name, model, workspace, pid}` |
-| `chat.send` | `{turn, text, botId, botName, instruction}` | `{turn, text}`；期间 `chat/delta`，最后 `chat/done` |
+| `chat.send` | `{turn, text, botId, botName, instruction}` | `{turn, text}`；期间 `chat/reasoning`、`chat/delta`、`chat/tool`，最后 `chat/done` |
+
+## 流式回答与工具卡片
+
+`ada-rpc-agent` 现在把 agent-loop 的 `llm.EventStream` 与 `tools/*` 事件实时转发给 ada_chat：
+
+- 文本增量走 `chat/delta`，`App.BotDelta` 追加到消息，`Animated` Markdown 边到边渲染；
+- 模型的思考内容走 `chat/reasoning`，`App.BotReasoning` 按顺序保留为独立的思考块，
+  界面显示成默认展开的「思考过程」卡片，可点标题收起；它和正文、工具按真实先后排列；
+- 机器人生成期间，输入框的发送按钮变成「停止生成」的方形停止图标；点击会取消这一轮的 RPC
+  调用，模型/工具随之停止，消息保留并标注「已停止生成」，进程本身继续运行，可以直接发下一条。
+  对话头部的「…」菜单里也有同一个「停止生成」；
+- 本轮结束后输入框恢复成发送箭头，草稿保留；
+- 工具开始/结束走 `chat/tool`（`running` → `ok`/`denied`/`error`/`timeout`），
+  `App.BotTool` 按 `turn + id` 建卡片并更新参数、结果、耗时；卡片**默认折叠**，只显示工具名、
+  状态与耗时，点标题才展开参数和结果；
+- 一轮回答按真实顺序保存：`Message.Parts` 记录「文字 → 工具 → 文字」的先后，
+  界面按这个顺序渲染，不再固定把工具卡片放在文字上方；工具并行执行时事件可能乱序，
+  卡片顺序按首次出现固定，结果回填到对应 id。
+
+回答里出现 `run_shell` 卡片，说明这次 preset 启用了 ada_go_v2 的 `tool-shell` 插件。命令实际上由
+`ada_go_v2` 进程在本机执行：`agent-release` preset 使用 `sandbox-none`（**policy-only，不做 OS 级隔离**）
+与 `workspace-write` 模式，权限等同当前用户。只读模式下 `shell-guard` 白名单会拦住未列出的程序；
+发布预设没有接审批插件，拒绝一律 fail-closed。安全说明见 ada_go_v2 的 `docs/tool-shell.md`。
 
 > 当前 ada_go_v2 宿主在一个进程内为每个 `botId` 建独立 session，但 preset、system prompt 和 LLM provider
 > 仍是进程级共享；这是项目群组方向要补的核心缺口。replay provider 的游标也是进程级，多个机器人共用
@@ -156,7 +183,9 @@ GOOS=linux CGO_ENABLED=0 go build ./...   # 非 Windows 也能构建
 - 移除一个机器人后进程仍在（还有另一个成员），移除最后一个后实例消失；
 - 设置页保存的运行时/preset 路径写入 `config.json`，新进程启动时用这份配置，不依赖环境变量；
 - 保存 OpenAI 兼容供应商（Endpoint/模型/API Key）后，runtime 会启用 `llm-openai`、禁用 replay，
-  经 mock OpenAI SSE 端点验证：请求携带保存的 Bearer key，回复来自该供应商，`bot.info` 模型回写。
+  经 mock OpenAI SSE 端点验证：请求携带保存的 Bearer key，回复来自该供应商，`bot.info` 模型回写；
+- 真实 agent 调用 `run_shell` 执行 `echo probe-ok`：先收到 running 卡片，再收到结果；
+  首个文本增量早于轮次结束（真流式），卡片在 UI 里显示「已完成 / 84ms / probe-ok」。
 
 重新引入测试时，优先补三类：工作区单进程的 supervisor 测试、RPC 契约测试、
 真实 runtime 的端到端测试。

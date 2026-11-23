@@ -28,6 +28,9 @@ type Message struct {
 	At        time.Time
 	Streaming bool
 	Tools     []*ToolCall
+	// Parts 保留一轮回答的真实顺序：模型先写的文字、工具调用、工具之后的文字。
+	// 历史/非流式消息可能只有 Text 而没有 Parts。
+	Parts []Part
 }
 
 // Session 是一条对话。BotID 非零时，回答来自那个机器人的进程实例。
@@ -88,6 +91,8 @@ type BotEngine interface {
 	Start(b *Bot) error
 	Stop(id int) error
 	Send(b *Bot, turn int, text string) error
+	// Cancel 终止该轮正在进行的 RPC 调用；已结束的轮次返回错误。
+	Cancel(botID, turn int) error
 	Close() error
 }
 
@@ -256,8 +261,11 @@ func (a *App) RestoreSession(s *Session, at int) {
 	a.ActiveID = s.ID
 }
 
-// Send 把草稿送进对话，并交给它绑定的机器人。
+// Send 把草稿送进对话，并交给它绑定的机器人。上一轮还在生成时不再接受新消息。
 func (a *App) Send() {
+	if a.Busy() {
+		return
+	}
 	s := a.Current()
 	if s == nil || s.BotID == 0 {
 		return
@@ -277,6 +285,52 @@ func (a *App) Send() {
 	a.sendToBot(s, text)
 }
 
+// Busy 报告当前会话是否还有一轮回答在生成（包括工具执行）；发送按钮据此显示运行态。
+func (a *App) Busy() bool {
+	s := a.Current()
+	if s == nil || len(s.Messages) == 0 {
+		return false
+	}
+	last := s.Messages[len(s.Messages)-1]
+	return last.Role == RoleAssistant && last.Streaming
+}
+
+// StopTurn 终止当前会话正在生成的一轮回答；消息保留，并标注已停止。
+func (a *App) StopTurn() bool {
+	s := a.Current()
+	if s == nil || len(s.Messages) == 0 {
+		return false
+	}
+	last := s.Messages[len(s.Messages)-1]
+	if last.Role != RoleAssistant || !last.Streaming {
+		return false
+	}
+	if a.Engine != nil {
+		_ = a.Engine.Cancel(s.BotID, last.ID)
+	}
+	const note = "（已停止生成）"
+	if strings.TrimSpace(last.Text) == "" {
+		last.Text = note
+	} else {
+		last.Text += "\n\n" + note
+	}
+	if len(last.Parts) > 0 {
+		last.Parts = append(last.Parts, Part{Kind: PartText, Text: note})
+	}
+	for _, call := range last.Tools {
+		if call.State == ToolRunning {
+			call.State = ToolFailed
+			if call.Result == "" {
+				call.Result = "已停止生成"
+			}
+		}
+	}
+	last.Streaming = false
+	s.Preview = Clip(last.Text, 88)
+	s.Updated = a.now()
+	return true
+}
+
 // sendToBot 把一轮问题交给机器人进程；回答由 RPC 事件流式写回。
 func (a *App) sendToBot(s *Session, text string) {
 	bot := a.BotByID(s.BotID)
@@ -292,6 +346,16 @@ func (a *App) sendToBot(s *Session, text string) {
 	}
 	if bot.State != BotRunning {
 		a.StartBot(bot.ID)
+		// StartBot 失败时进程实例还没有登记，Send 只会报“进程还没有运行”；
+		// 这里把真正的原因（路径、工作目录、启动错误）带回对话。
+		if bot.State != BotRunning && bot.State != BotStarting {
+			reason := strings.TrimSpace(bot.Err)
+			if reason == "" {
+				reason = "机器人启动失败"
+			}
+			a.BotTurnFailed(bot.ID, m.ID, reason)
+			return
+		}
 	}
 	if err := a.Engine.Send(bot, m.ID, text); err != nil {
 		a.BotTurnFailed(bot.ID, m.ID, err.Error())
@@ -408,6 +472,52 @@ func (a *App) AddBot(b Bot) (*Bot, error) {
 	return bot, nil
 }
 
+// UpdateBot 修改机器人的资料。工作目录改变时，运行中的实例会停掉并在新目录重启；
+// 其余字段立即生效，系统提示词要等该机器人的进程下一次启动才会重新装配。
+func (a *App) UpdateBot(id int, patch Bot) (*Bot, error) {
+	bot := a.BotByID(id)
+	if bot == nil {
+		return nil, fmt.Errorf("机器人不存在")
+	}
+	name := Clip(strings.TrimSpace(patch.Name), 40)
+	if name == "" {
+		name = "新机器人"
+	}
+	description := strings.TrimSpace(patch.Description)
+	instruction := strings.TrimSpace(patch.Instruction)
+	ws := strings.TrimSpace(patch.Workspace)
+	if ws == "" {
+		return nil, fmt.Errorf("请选择机器人进程的工作目录")
+	}
+	abs, err := filepath.Abs(ws)
+	if err != nil {
+		return nil, fmt.Errorf("工作目录非法: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("工作目录不存在或不是文件夹: %s", abs)
+	}
+
+	moved := workspaceKey(bot.Workspace) != workspaceKey(abs)
+	running := bot.State == BotRunning || bot.State == BotStarting
+	if moved && running {
+		a.StopBot(id)
+	}
+	bot.Name = name
+	bot.Description = description
+	bot.Instruction = instruction
+	bot.Workspace = abs
+	if strings.TrimSpace(patch.Icon) != "" {
+		bot.Icon = patch.Icon
+		bot.Color = patch.Color
+	}
+	a.Workspace = abs
+	if moved && running {
+		a.StartBot(id)
+	}
+	return bot, nil
+}
+
 // StartBot 启动机器人的进程实例；已经在运行时是空操作。
 func (a *App) StartBot(id int) {
 	bot := a.BotByID(id)
@@ -505,6 +615,13 @@ func (a *App) BotDelta(botID, turn int, chunk string) {
 			for _, m := range s.Messages {
 				if m.ID == turn && m.Streaming {
 					m.Text += chunk
+					// 工具调用会把一段文本截断：后续增量要开一个新的文本块，
+					// 这样界面按真实顺序显示“文字 → 工具 → 文字”。
+					if n := len(m.Parts); n == 0 || m.Parts[n-1].Kind != PartText {
+						m.Parts = append(m.Parts, Part{Kind: PartText, Text: chunk})
+					} else {
+						m.Parts[n-1].Text += chunk
+					}
 					s.Preview = Clip(m.Text, 88)
 					s.Updated = a.now()
 					return
@@ -514,12 +631,101 @@ func (a *App) BotDelta(botID, turn int, chunk string) {
 	})
 }
 
-// BotTurnDone 结束一轮机器人回答；final 非空时作为最终文本。
+// BotReasoning 追加模型的一段思考内容；它和正文分开保存，界面显示成可折叠的“思考过程”。
+func (a *App) BotReasoning(botID, turn int, chunk string) {
+	a.apply(func() {
+		for _, s := range a.Sessions {
+			if s.BotID != botID {
+				continue
+			}
+			for _, m := range s.Messages {
+				if m.ID != turn || !m.Streaming {
+					continue
+				}
+				if n := len(m.Parts); n == 0 || m.Parts[n-1].Kind != PartReasoning {
+					m.Parts = append(m.Parts, Part{Kind: PartReasoning, Text: chunk, Open: true})
+				} else {
+					m.Parts[n-1].Text += chunk
+				}
+				s.Updated = a.now()
+				return
+			}
+		}
+	})
+}
+
+// BotTool 更新一轮回答里某次工具调用的状态；running 先建卡片，结果到达后再补内容。
+func (a *App) BotTool(botID, turn int, ev ToolEvent) {
+	a.apply(func() {
+		m, _ := a.botTurn(botID, turn)
+		if m == nil || ev.ID == "" {
+			return
+		}
+		// 用户已经停止这一轮时，迟到的工具事件不应再改界面。
+		if !m.Streaming {
+			return
+		}
+		var call *ToolCall
+		for _, c := range m.Tools {
+			if c.ID == ev.ID {
+				call = c
+				break
+			}
+		}
+		if call == nil {
+			// 工具卡片默认折叠:标题行始终显示状态与耗时,参数和结果等用户点开再看。
+			call = &ToolCall{ID: ev.ID}
+			m.Tools = append(m.Tools, call)
+			m.Parts = append(m.Parts, Part{Kind: PartTool, ToolID: ev.ID})
+		} else if !hasToolPart(m.Parts, ev.ID) {
+			// 只有结果事件、没有 running 事件：卡片仍要出现在它到达的位置。
+			m.Parts = append(m.Parts, Part{Kind: PartTool, ToolID: ev.ID})
+		}
+		if ev.Name != "" {
+			call.Name = ev.Name
+		}
+		if ev.Args != "" {
+			call.Args = ev.Args
+		}
+		switch ev.Status {
+		case "running":
+			call.State = ToolRunning
+		case "", "ok":
+			call.State = ToolDone
+		default:
+			call.State = ToolFailed
+		}
+		if ev.Text != "" {
+			call.Result = ev.Text
+		}
+		if ev.Duration > 0 {
+			call.Took = ev.Duration
+		}
+		if call.State == ToolDone && call.Result == "" {
+			call.Result = "(无输出)"
+		}
+	})
+}
+
+func hasToolPart(parts []Part, id string) bool {
+	for _, p := range parts {
+		if p.Kind == PartTool && p.ToolID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// BotTurnDone 结束一轮机器人回答；已经流式写入的文本保持原样，只在没有增量时用最终结果补齐。
 func (a *App) BotTurnDone(botID, turn int, final string) {
 	a.apply(func() {
 		if m, s := a.botTurn(botID, turn); m != nil {
-			if strings.TrimSpace(final) != "" {
+			if strings.TrimSpace(m.Text) == "" && strings.TrimSpace(final) != "" {
 				m.Text = final
+				// 只有工具、没有文本增量时，最终文本也要落到顺序里，否则界面只显示卡片。
+				if len(m.Parts) > 0 {
+					m.Parts = append(m.Parts, Part{Kind: PartText, Text: final})
+				}
 			}
 			m.Streaming = false
 			s.Preview = Clip(m.Text, 88)
@@ -537,8 +743,12 @@ func (a *App) BotTurnFailed(botID, turn int, reason string) {
 		}
 		if strings.TrimSpace(m.Text) == "" {
 			m.Text = "（机器人没有回答：" + reason + "）"
+			if len(m.Parts) > 0 {
+				m.Parts = append(m.Parts, Part{Kind: PartText, Text: m.Text})
+			}
 		} else {
 			m.Text += "\n\n（连接中断：" + reason + "）"
+			m.Parts = append(m.Parts, Part{Kind: PartText, Text: "（连接中断：" + reason + "）"})
 		}
 		m.Streaming = false
 		s.Preview = Clip(m.Text, 88)
