@@ -10,6 +10,7 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
+	"github.com/issueye/ada_t/plugin"
 )
 
 var sendGlyph = mui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>`))
@@ -55,6 +56,7 @@ func (u *UI) composerCard(c *mui.Context, tk *theme.Tokens) {
 			mui.Row(c).Padding(4, 8, 8, 8).Gap(4).AlignItems(mui.Center).Justify(mui.SpaceBetween).Children(func() {
 				mui.Row(c).Gap(2).AlignItems(mui.Center).Children(func() {
 					attachButton(c)
+					u.pluginSlot(c, plugin.SlotComposerAction)
 					display.Tag(c, "本机运行", display.TagProps{
 						Variant: display.TagBorderless, Color: display.TagGray, Size: theme.Small, Icon: lucide.Database(),
 					})

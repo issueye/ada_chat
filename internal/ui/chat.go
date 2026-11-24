@@ -11,6 +11,7 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
 	"github.com/lobehub/lobe-mygo/pkg/markdown"
+	"github.com/issueye/ada_t/plugin"
 	"github.com/lobehub/lobe-mygo/pkg/overlay"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
 
@@ -98,6 +99,7 @@ func (u *UI) chatHeader(c *mui.Context, tk *theme.Tokens) {
 			})
 		})
 		mui.Row(c).Gap(4).AlignItems(mui.Center).Children(func() {
+			u.pluginSlot(c, plugin.SlotChatHeader)
 			u.conversationMenu(c, s)
 		})
 	})
@@ -185,6 +187,7 @@ func (u *UI) conversationMenu(c *mui.Context, s *app.Session) {
 		c.WriteClipboard(u.conversationText(s))
 		feedback.ShowToast(c, feedback.ToastProps{Title: "已复制对话", Type: feedback.ToastSuccess})
 	case "delete":
+		u.deleteID = s.ID
 		u.confirmDel = true
 	}
 }
@@ -313,6 +316,15 @@ func (u *UI) assistantMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) 
 							u.reasoningCard(c, tk, m, i, &m.Parts[i], m.Streaming && i == len(m.Parts)-1)
 						}
 					}
+					// 正文、工具都画完后,如果这一轮还在跑,补一个尾部的 loading:
+					// 模型在写下一段、或工具在长时间执行时,界面必须有「还在动」的信号。
+					// 最后一段是仍在流入的思考块时跳过——思考卡片自己已经有 spinner。
+					if m.Streaming && !tailReasoning(m) {
+						mui.Row(c).Gap(6).AlignItems(mui.Center).Children(func() {
+							feedback.Spin(c, feedback.SpinProps{CustomSize: 12}, nil).AlignSelf(mui.Center)
+							display.Text(c, "生成中", display.TextProps{Type: display.TextSecondary, FontSize: 11})
+						})
+					}
 				})
 			} else {
 				if len(m.Tools) > 0 {
@@ -324,7 +336,7 @@ func (u *UI) assistantMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) 
 				}
 				switch {
 				case m.Text == "" && m.Streaming && len(m.Tools) == 0:
-					feedback.Spin(c, feedback.SpinProps{Size: theme.Small, Variant: feedback.SpinNetwork}, nil)
+					feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
 				case m.Text != "":
 					markdown.Markdown(c, m.Text, markdown.MarkdownProps{
 						Variant:  markdown.Chat,
@@ -404,4 +416,14 @@ func (u *UI) messageActions(c *mui.Context, m *app.Message) {
 			feedback.ShowToast(c, feedback.ToastProps{Title: "消息已删除", Type: feedback.ToastInfo})
 		}
 	}
+}
+
+// tailReasoning 报告这一轮最后一个可见 part 是不是仍在流入的思考块。
+// 那种情况下思考卡片自己带着 spinner,正文尾部不必再放一个。
+func tailReasoning(m *app.Message) bool {
+	if m == nil || len(m.Parts) == 0 {
+		return false
+	}
+	last := m.Parts[len(m.Parts)-1]
+	return last.Kind == app.PartReasoning && strings.TrimSpace(last.Text) != ""
 }

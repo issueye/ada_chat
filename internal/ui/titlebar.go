@@ -55,9 +55,11 @@ func (u *UI) titleBar(c *mui.Context) {
 	})
 }
 
-// openSettings 打开前先把已保存的偏好放回表单。
+// openSettings 打开常规设置:先把已保存的偏好放回表单,并关掉其它弹窗/菜单。
 func (u *UI) openSettings() {
 	u.settings.ResetTo(u.App.Prefs)
 	u.showKey = false
+	u.userMenu = false
+	u.agentUp, u.providerUp = false, false
 	u.settingsUp = true
 }

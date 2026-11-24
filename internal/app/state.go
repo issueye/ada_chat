@@ -47,6 +47,10 @@ func (a *App) SaveState() error {
 	if err != nil {
 		return err
 	}
+	// 覆盖前留一份上一版:测试/误操作把状态写空时,还能把机器人捞回来。
+	if old, rerr := os.ReadFile(path); rerr == nil && len(old) > 0 {
+		_ = os.WriteFile(path+".bak", old, 0o600)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -59,6 +63,13 @@ func (a *App) SaveState() error {
 		return err
 	}
 	return nil
+}
+
+// SetStatePath 覆盖状态文件位置,返回恢复函数。只给宿主集成测试/工具用;生产代码不要调用。
+func SetStatePath(path string) (restore func()) {
+	old := statePath
+	statePath = func() (string, error) { return path, nil }
+	return func() { statePath = old }
 }
 
 // persist 是保存的尽力而为版本：保存失败不该打断聊天。

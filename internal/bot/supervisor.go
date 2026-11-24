@@ -42,6 +42,8 @@ type Supervisor struct {
 
 type instance struct {
 	id        int
+	// key 是实例键(目录 + 环境指纹);workspace 只用于展示与 cwd。
+	key       string
 	workspace string
 	cmd       *exec.Cmd
 	ep        endpoint
@@ -151,7 +153,7 @@ func (s *Supervisor) Start(b *app.Bot) error {
 	if info, err := os.Stat(runtimePath); err != nil || info.IsDir() {
 		return fmt.Errorf("Agent 路径不存在或不是文件: %s", runtimePath)
 	}
-	key := workspaceKey(b.Workspace)
+	key := app.InstanceKey(b)
 	s.mu.Lock()
 	if s.closing.Load() {
 		s.mu.Unlock()
@@ -164,13 +166,13 @@ func (s *Supervisor) Start(b *app.Bot) error {
 		s.app.SetBotState(b.ID, state, pid, errText)
 		return nil
 	}
-	info, err := os.Stat(key)
+	info, err := os.Stat(b.Workspace)
 	if err != nil || !info.IsDir() {
 		s.mu.Unlock()
 		return fmt.Errorf("工作目录不存在或不是文件夹: %s", key)
 	}
 	s.nextID++
-	members := s.app.BotIDsInWorkspace(key)
+	members := s.app.BotIDsInWorkspace(b)
 	if len(members) == 0 {
 		members = []int{b.ID}
 	}
@@ -179,7 +181,7 @@ func (s *Supervisor) Start(b *app.Bot) error {
 		bots[id] = struct{}{}
 	}
 	r := &instance{
-		id: s.nextID, workspace: key,
+		id: s.nextID, workspace: b.Workspace, key: key,
 		state: app.BotStarting,
 		turns: map[int]int{}, bots: bots,
 	}
@@ -235,6 +237,7 @@ func (s *Supervisor) spawn(b *app.Bot, ep endpoint, runtimePath string) (*exec.C
 	if key := strings.TrimSpace(s.app.Prefs.APIKey); key != "" {
 		env = setEnv(env, "ADA_LLM_API_KEY", key)
 	}
+	env = applyBotEnv(env, b.Env)
 	cmd.Env = env
 	cmd.Stdout = f
 	cmd.Stderr = f
@@ -248,7 +251,24 @@ func (s *Supervisor) spawn(b *app.Bot, ep endpoint, runtimePath string) (*exec.C
 	return cmd, f.Name(), nil
 }
 
-// setEnv replaces key in an environment slice, which may inherit a stale value.
+// applyBotEnv 把机器人自己的环境变量写进子进程,跳过宿主保留的变量:
+// ADA_BOT_ADDR/TOKEN/NAME/MODEL/INSTRUCTION/WORKSPACE 与 preset 由宿主决定,不能被覆盖。
+func applyBotEnv(env []string, extra map[string]string) []string {
+	for name, value := range extra {
+		if reservedBotEnv[name] {
+			continue
+		}
+		env = setEnv(env, name, value)
+	}
+	return env
+}
+
+// reservedBotEnv 是宿主自己写入、机器人不能覆盖的变量。
+var reservedBotEnv = map[string]bool{
+	EnvAddr: true, EnvToken: true, EnvName: true, EnvModel: true,
+	EnvInstruction: true, EnvWorkspace: true, "ADA_GO_AGENT_PRESET": true,
+}
+
 func setEnv(env []string, key, value string) []string {
 	prefix := key + "="
 	out := env[:0]
@@ -282,7 +302,7 @@ func (s *Supervisor) connect(r *instance) {
 			scancel()
 			if err == nil {
 				s.mu.Lock()
-				if s.closing.Load() || r.stopping.Load() || s.instances[r.workspace] != r {
+				if s.closing.Load() || r.stopping.Load() || s.instances[r.key] != r {
 					s.mu.Unlock()
 					_ = p.Close()
 					return
@@ -463,7 +483,7 @@ func (s *Supervisor) failed(r *instance, reason string) {
 // Send asks the workspace's process to answer one turn; events stream back to
 // the bot that owns the turn. sessionID 标识宿主侧的对话，runtime 按它隔离 agent session。
 func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) error {
-	key := workspaceKey(b.Workspace)
+	key := app.InstanceKey(b)
 	s.mu.Lock()
 	r := s.instances[key]
 	s.mu.Unlock()
@@ -604,7 +624,7 @@ func (s *Supervisor) Approve(botID int, id string, allow bool, reason string) er
 	if bot == nil {
 		return errors.New("机器人不存在")
 	}
-	key := workspaceKey(bot.Workspace)
+	key := app.InstanceKey(bot)
 	s.mu.Lock()
 	r := s.instances[key]
 	s.mu.Unlock()
@@ -631,7 +651,7 @@ func (s *Supervisor) waitPeer(r *instance, timeout time.Duration) (rpc.Peer, str
 		s.mu.Lock()
 		p := r.peer
 		stopped := r.stopping.Load()
-		exists := s.instances[r.workspace] == r
+		exists := s.instances[r.key] == r
 		s.mu.Unlock()
 		if p != nil {
 			return p, ""
@@ -664,7 +684,7 @@ func (s *Supervisor) Stop(id int) error {
 	delete(r.bots, id)
 	last := len(r.bots) == 0
 	if last {
-		delete(s.instances, r.workspace)
+		delete(s.instances, r.key)
 		r.stopping.Store(true)
 	}
 	s.mu.Unlock()
@@ -737,13 +757,13 @@ func (s *Supervisor) forgetTurn(r *instance, turn int) {
 func (s *Supervisor) current(r *instance) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.instances[r.workspace] == r
+	return s.instances[r.key] == r
 }
 
 func (s *Supervisor) removeInstance(r *instance) {
 	s.mu.Lock()
-	if s.instances[r.workspace] == r {
-		delete(s.instances, r.workspace)
+	if s.instances[r.key] == r {
+		delete(s.instances, r.key)
 	}
 	s.mu.Unlock()
 }

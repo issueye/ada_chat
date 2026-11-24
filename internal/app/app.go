@@ -2,11 +2,15 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +48,8 @@ type Session struct {
 	Updated  time.Time  `json:"updated"`
 	Unread   int        `json:"unread,omitempty"`
 	Pinned   bool       `json:"pinned,omitempty"`
+	// Archived 归档的对话从「今天/更早」移到「归档」;消息与 id 都保留。
+	Archived bool       `json:"archived,omitempty"`
 	BotID    int        `json:"botId"`
 	Messages []*Message `json:"messages,omitempty"`
 }
@@ -87,6 +93,10 @@ type Bot struct {
 	// Icon 是 ui 侧图标表里的键，Color 是 #rrggbb。
 	Icon  string `json:"icon,omitempty"`
 	Color string `json:"color,omitempty"`
+	// Env 是这个机器人进程的额外环境变量：key 必须是合法变量名，value 非空。
+	// 它注入到 ada-rpc-agent 的环境里（优先级高于全局供应商设置，低于宿主保留变量），
+	// 适合放每个机器人自己的 ADA_LLM_API_KEY / ADA_SECRET_* / endpoint 等。
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // BotEngine 管理机器人进程与 RPC 连接。它把状态回调到 App 的 Bot 方法。
@@ -276,6 +286,38 @@ func (a *App) RestoreSession(s *Session, at int) {
 	a.persist()
 }
 
+// SessionByID 返回指定对话；不存在返回 nil。
+func (a *App) SessionByID(id int) *Session {
+	for _, s := range a.Sessions {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// ArchiveSession 归档或取消归档一条对话。归档当前对话时切到一条未归档的，
+// 避免界面停在一个刚从主列表移走的位置。
+func (a *App) ArchiveSession(id int, archived bool) bool {
+	for _, s := range a.Sessions {
+		if s.ID != id {
+			continue
+		}
+		s.Archived = archived
+		if archived && a.ActiveID == id {
+			a.ActiveID = 0
+			for _, other := range a.Sessions {
+				if !other.Archived {
+					a.ActiveID = other.ID
+					break
+				}
+			}
+		}
+		a.persist()
+		return true
+	}
+	return false
+}
 // Send 把草稿送进对话，并交给它绑定的机器人。上一轮还在生成时不再接受新消息。
 func (a *App) Send() {
 	if a.Busy() {
@@ -300,14 +342,41 @@ func (a *App) Send() {
 	a.sendToBot(s, text)
 }
 
-// Busy 报告当前会话是否还有一轮回答在生成（包括工具执行）；发送按钮据此显示运行态。
-func (a *App) Busy() bool {
+// AppendExternal 向当前会话追加一条消息（插件/外部服务用，不触发机器人）。
+// 返回 false 表示当前没有会话或文本为空。
+func (a *App) AppendExternal(text string, role Role) bool {
 	s := a.Current()
+	if s == nil {
+		return false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	a.apply(func() {
+		s.Messages = append(s.Messages, &Message{ID: a.id(), Role: role, Text: text, At: a.now()})
+		if len(s.Messages) == 1 {
+			s.Title = Clip(text, 48)
+		}
+		s.Preview = Clip(text, 88)
+		s.Updated = a.now()
+	})
+	return true
+}
+
+// Running 报告这条会话是否还有一轮回答在生成（包括工具执行）。
+// 侧栏据此在行尾显示 loading 动画，而不是把「刚刚」这类静态时间当作运行态。
+func (s *Session) Running() bool {
 	if s == nil || len(s.Messages) == 0 {
 		return false
 	}
 	last := s.Messages[len(s.Messages)-1]
 	return last.Role == RoleAssistant && last.Streaming
+}
+
+// Busy 报告当前会话是否还有一轮回答在生成（包括工具执行）；发送按钮据此显示运行态。
+func (a *App) Busy() bool {
+	return a.Current().Running()
 }
 
 // StopTurn 终止当前会话正在生成的一轮回答；消息保留，并标注已停止。
@@ -433,19 +502,74 @@ func (a *App) BotByID(id int) *Bot {
 	return nil
 }
 
-// BotIDsInWorkspace 返回共享同一个工作目录的全部机器人，供进程管理器
-// 在重建工作区实例时把成员一起挂上。
-func (a *App) BotIDsInWorkspace(workspace string) []int {
-	key := workspaceKey(workspace)
+// BotIDsInWorkspace 返回与 b 共享同一个进程实例的全部机器人:同目录且同环境。
+// 进程实例的键见 InstanceKey——环境不同(比如每个机器人自己的 key)就不共享。
+func (a *App) BotIDsInWorkspace(b *Bot) []int {
+	key := InstanceKey(b)
 	out := make([]int, 0, len(a.Bots))
-	for _, b := range a.Bots {
-		if workspaceKey(b.Workspace) == key {
-			out = append(out, b.ID)
+	for _, other := range a.Bots {
+		if InstanceKey(other) == key {
+			out = append(out, other.ID)
 		}
 	}
 	return out
 }
 
+// InstanceKey 是进程实例的键:规范化工作目录 + 环境变量指纹。
+//
+// ada_chat 默认「一个工作目录一个进程」;但每个机器人可以带自己的环境变量
+// (API key、endpoint、ADA_SECRET_*),它们必须进到子进程的环境里。环境不同时
+// 强行共享进程会让后加入的机器人用上前一个的 key,所以把环境指纹并进键:
+// 同目录且同环境 → 共享;否则各起一个进程。
+func InstanceKey(b *Bot) string {
+	if b == nil {
+		return ""
+	}
+	base := workspaceKey(b.Workspace)
+	if len(b.Env) == 0 {
+		return base
+	}
+	names := make([]string, 0, len(b.Env))
+	for name := range b.Env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var sb strings.Builder
+	for _, name := range names {
+		sb.WriteString(name)
+		sb.WriteString("=")
+		sb.WriteString(b.Env[name])
+		sb.WriteString("\x00")
+	}
+	sum := sha256.Sum256([]byte(sb.String()))
+	return base + "|env:" + hex.EncodeToString(sum[:8])
+}
+
+// envNameRe 限制环境变量名:与 shell 的变量名一致。
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// normalizeBotEnv 清洗环境变量:非法名与空值一律丢弃(空值等于没设)。
+func normalizeBotEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for name, value := range env {
+		name = strings.TrimSpace(name)
+		if !envNameRe.MatchString(name) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 func workspaceKey(path string) string {
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
@@ -482,6 +606,7 @@ func (a *App) AddBot(b Bot) (*Bot, error) {
 		return nil, fmt.Errorf("工作目录不存在或不是文件夹: %s", abs)
 	}
 	b.Workspace = abs
+	b.Env = normalizeBotEnv(b.Env)
 	b.State = BotStopped
 	b.Err = ""
 	b.ID = a.id()
@@ -519,21 +644,27 @@ func (a *App) UpdateBot(id int, patch Bot) (*Bot, error) {
 		return nil, fmt.Errorf("工作目录不存在或不是文件夹: %s", abs)
 	}
 
-	moved := workspaceKey(bot.Workspace) != workspaceKey(abs)
+	// 环境变量也是进程级配置:环境或工作目录变了,运行中的实例要重建才能生效。
+	oldKey := InstanceKey(bot)
+	candidate := *bot
+	candidate.Workspace = abs
+	candidate.Env = normalizeBotEnv(patch.Env)
+	newKey := InstanceKey(&candidate)
 	running := bot.State == BotRunning || bot.State == BotStarting
-	if moved && running {
+	if running && newKey != oldKey {
 		a.StopBot(id)
 	}
 	bot.Name = name
 	bot.Description = description
 	bot.Instruction = instruction
 	bot.Workspace = abs
+	bot.Env = normalizeBotEnv(patch.Env)
 	if strings.TrimSpace(patch.Icon) != "" {
 		bot.Icon = patch.Icon
 		bot.Color = patch.Color
 	}
 	a.Workspace = abs
-	if moved && running {
+	if running && newKey != oldKey {
 		a.StartBot(id)
 	}
 	a.persist()
@@ -631,8 +762,9 @@ func (a *App) OpenBotChat(id int) bool {
 		return false
 	}
 	a.StartBot(id)
+		a.persist()
 	for _, s := range a.Sessions {
-		if s.BotID == id {
+		if s.BotID == id && !s.Archived {
 			a.ActiveID = s.ID
 			a.persist()
 			return true

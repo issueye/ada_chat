@@ -8,9 +8,11 @@ import (
 	mui "github.com/egoist/mygo/ui"
 	"github.com/lobehub/lobe-mygo/pkg/action"
 	"github.com/lobehub/lobe-mygo/pkg/display"
+	"github.com/lobehub/lobe-mygo/pkg/feedback"
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
+	"github.com/lobehub/lobe-mygo/pkg/motion"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
 
 	"ada_chat/internal/app"
@@ -45,6 +47,7 @@ func (u *UI) sidebar(c *mui.Context) {
 				mui.Column(c).PaddingX(4).PaddingY(4).Gap(14).Children(func() {
 					u.botSection(c)
 					u.sessionSections(c)
+					u.pluginSidebarSection(c)
 				})
 			})
 			u.sidebarFooter(c)
@@ -87,6 +90,7 @@ func (u *UI) sidebarSearch(c *mui.Context) {
 }
 
 func (u *UI) sessionSections(c *mui.Context) {
+	tk := theme.TokensOf(c)
 	now := c.Now()
 	active := ""
 	if s := u.App.Current(); s != nil {
@@ -101,33 +105,86 @@ func (u *UI) sessionSections(c *mui.Context) {
 			mui.Spacer(c)
 			display.Text(c, strconv.Itoa(len(g.items)), display.TextProps{Type: display.TextSecondary, FontSize: 11})
 		})
-		items := make([]display.ListItem, 0, len(g.items))
-		for _, s := range g.items {
-			it := display.ListItem{
-				Key:         keyOf(s.ID),
-				Label:       s.Title,
-				Description: s.Preview,
-				Extra:       app.RelativeTime(now, s.Updated),
-				Avatar: func() {
-					if b := u.botForSession(s); b != nil {
-						botAvatar(c, b.Icon, b.Color, 22)
-						return
-					}
-					display.Avatar(c, s.Title, display.AvatarProps{Size: 22})
-				},
+		mui.Column(c).Gap(2).AlignSelf(mui.Stretch).Children(func() {
+			for _, s := range g.items {
+				if u.sessionRow(c, tk, s, keyOf(s.ID) == active) {
+					u.App.SelectSession(s.ID)
+				}
 			}
-			if s.Unread > 0 {
-				it.Extra = "新"
-			}
-			items = append(items, it)
-		}
-		clicked := display.List(c, display.ListProps{
-			Items: items, Active: active, Variant: display.ListBorderless, Compact: true,
 		})
-		if id, err := strconv.Atoi(strings.TrimPrefix(clicked, "s-")); clicked != "" && err == nil {
-			u.App.SelectSession(id)
-		}
 	}
+}
+
+var listRowTransition = mui.ElementTransition{Duration: 150 * time.Millisecond, Ease: motion.EaseOut, Colors: true}
+
+// sessionRow 画一行会话:头像 + 标题/预览 + 尾部状态。
+//
+// 尾部状态按优先级:正在生成 → loading 动画;有未读 → 「新」;其余 → 相对时间。
+// display.List 的 Extra 只能是字符串,放不下动画,所以这一行由本包自绘:
+// 布局、字号与 display.List 的 Compact 行保持一致(32 高、12 间距、8 内边距)。
+func (u *UI) sessionRow(c *mui.Context, tk *theme.Tokens, s *app.Session, active bool) bool {
+	row := mui.ButtonBase(c).Label(s.Title).Row().Gap(12).AlignItems(mui.Center).
+		Justify(mui.Start).MinHeight(32).PaddingY(6).PaddingX(8).Radius(tk.BorderRadius).
+		FontSize(14).AlignSelf(mui.Stretch).Transition(listRowTransition)
+	fg := tk.TextSecondary
+	switch {
+	case active:
+		fg = tk.Text
+		row.Background(tk.FillSecondary).Cursor(mui.CursorPointer)
+	case row.Hovered():
+		fg = tk.Text
+		row.Background(tk.FillTertiary).Cursor(mui.CursorPointer)
+	default:
+		row.Cursor(mui.CursorPointer)
+	}
+	row.TextColor(fg)
+	row.Children(func() {
+		mui.Box(c).Shrink(0).Children(func() {
+			if b := u.botForSession(s); b != nil {
+				botAvatar(c, b.Icon, b.Color, 22)
+				return
+			}
+			display.Avatar(c, s.Title, display.AvatarProps{Size: 22})
+		})
+		mui.Column(c).Gap(1).Grow(1).Basis(0).MinWidth(0).Children(func() {
+			label := mui.Text(c, s.Title).SingleLine()
+			if active {
+				label.FontWeight(500)
+			}
+			if s.Preview != "" {
+				mui.Text(c, s.Preview).SingleLine().FontSize(12).LineHeight(1.4).TextColor(tk.TextDescription)
+			}
+		})
+		switch {
+		case s.Running():
+			// 这一行的「正在运行」就是动画本身:spinner 每帧请求帧,直到这一轮结束。
+			feedback.Spin(c, feedback.SpinProps{CustomSize: 14}, nil).AlignSelf(mui.Center)
+		case s.Unread > 0:
+			display.Text(c, "新", display.TextProps{Type: display.TextSecondary, FontSize: 12})
+		default:
+			display.Text(c, app.RelativeTime(c.Now(), s.Updated), display.TextProps{Type: display.TextSecondary, FontSize: 12})
+		}
+	})
+		// 右键菜单:复制会话 id、归档/取消归档、移除(移除走确认弹窗)。
+		row = row.ContextMenu(func(m *mui.Menu) {
+			if m.Item("复制会话 ID").Chosen() {
+				c.WriteClipboard(strconv.Itoa(s.ID))
+				feedback.ShowToast(c, feedback.ToastProps{Title: "已复制会话 ID", Description: "s-" + strconv.Itoa(s.ID), Type: feedback.ToastSuccess})
+			}
+			archiveLabel := "归档"
+			if s.Archived {
+				archiveLabel = "取消归档"
+			}
+			if m.Item(archiveLabel).Chosen() {
+				u.App.ArchiveSession(s.ID, !s.Archived)
+			}
+			m.Separator()
+			if m.Item("移除").Chosen() {
+				u.deleteID = s.ID
+				u.confirmDel = true
+			}
+		})
+	return row.Clicked()
 }
 
 func keyOf(id int) string { return "s-" + strconv.Itoa(id) }
@@ -143,9 +200,11 @@ func groupSessions(all []*app.Session, query string, now time.Time) []sessionGro
 		}
 		return []sessionGroup{{label: "搜索结果", items: hits}}
 	}
-	var pinned, today, earlier []*app.Session
+	var pinned, today, earlier, archived []*app.Session
 	for _, s := range all {
 		switch {
+		case s.Archived:
+			archived = append(archived, s)
 		case s.Pinned:
 			pinned = append(pinned, s)
 		case now.Sub(s.Updated) < 24*time.Hour:
@@ -158,6 +217,7 @@ func groupSessions(all []*app.Session, query string, now time.Time) []sessionGro
 		{label: "置顶", items: pinned},
 		{label: "今天", items: today},
 		{label: "更早", items: earlier},
+		{label: "归档", items: archived},
 	}
 }
 
@@ -165,13 +225,62 @@ func (u *UI) sidebarFooter(c *mui.Context) {
 	tk := theme.TokensOf(c)
 	layout.Divider(c, layout.DividerProps{})
 	mui.Row(c).Shrink(0).Padding(8).Gap(4).AlignItems(mui.Center).Children(func() {
-		display.Avatar(c, u.App.UserName(), display.AvatarProps{Size: 26})
-		mui.Column(c).Grow(1).Basis(0).MinWidth(0).Padding(0, 0, 0, 4).Children(func() {
-			mui.Text(c, u.App.UserName()).FontSize(13).FontWeight(500).TextColor(tk.Text).SingleLine()
-			mui.Text(c, "本地会话").FontSize(11).TextColor(tk.TextTertiary).SingleLine()
+		// 左下角用户区本身就是入口:点它弹出 Popover,里面分头进 Agent / 供应商 / 常规设置。
+		user := mui.ButtonBase(c).Label(u.App.UserName()).Row().Gap(8).AlignItems(mui.Center).
+			Grow(1).Basis(0).MinWidth(0).Padding(4, 4, 4, 6).Radius(tk.BorderRadiusSM).
+			Cursor(mui.CursorPointer).AlignSelf(mui.Stretch)
+		if u.userMenu || user.Hovered() {
+			user.Background(tk.FillTertiary)
+		}
+		user.Children(func() {
+			display.Avatar(c, u.App.UserName(), display.AvatarProps{Size: 26})
+			mui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+				mui.Text(c, u.App.UserName()).FontSize(13).FontWeight(500).TextColor(tk.Text).SingleLine()
+				mui.Text(c, "本地会话").FontSize(11).TextColor(tk.TextTertiary).SingleLine()
+			})
+			// 展开时箭头朝下,收起时朝上:同一帧里跟着状态变。
+			icon := lucide.ChevronUp()
+			if u.userMenu {
+				icon = lucide.ChevronDown()
+			}
+			mui.Icon(c, icon).FontSize(14).TextColor(tk.TextTertiary).Shrink(0)
+		})
+		if user.Clicked() {
+			u.userMenu = !u.userMenu
+		}
+		mui.Popover(c, user, &u.userMenu, func() {
+			mui.Column(c).Gap(2).Width(200).Padding(4).Children(func() {
+				u.menuRow(c, tk, lucide.Bot(), "Agent", "路径", u.openAgentSettings)
+				u.menuRow(c, tk, lucide.Cpu(), "供应商", "模型", u.openProviderSettings)
+				u.menuRow(c, tk, lucide.SlidersHorizontal(), "常规设置", "名称", u.openSettings)
+			})
 		})
 		if action.ActionIcon(c, lucide.CircleHelp(), small("帮助")).Clicked() {
 			c.OpenURL("https://mygo.lobehub.com")
 		}
 	})
+}
+
+// menuRow 是 Popover 里的一行入口:图标 + 标题/说明 + 点击回调。
+// 行本身是带可访问名字的 ButtonBase,键盘与读屏行为与其它按钮一致。
+// menuRow 是 Popover 里的一行入口:左边图标 + 标题,右边一句极短提示。
+// 单行、窄高(28),比上下两行的菜单更紧凑;行本身是带可访问名字的 ButtonBase。
+func (u *UI) menuRow(c *mui.Context, tk *theme.Tokens, icon *mui.SVG, title, hint string, onClick func()) {
+	row := mui.ButtonBase(c).Label(title).Row().Gap(8).AlignItems(mui.Center).
+		PaddingY(4).PaddingX(8).MinHeight(28).Radius(tk.BorderRadiusSM).
+		Cursor(mui.CursorPointer).AlignSelf(mui.Stretch)
+	if row.Hovered() {
+		row.Background(tk.FillTertiary)
+	}
+	row.Children(func() {
+		mui.Icon(c, icon).FontSize(15).TextColor(tk.TextSecondary).Shrink(0)
+		mui.Text(c, title).FontSize(13).TextColor(tk.Text).SingleLine()
+		mui.Spacer(c)
+		if hint != "" {
+			mui.Text(c, hint).FontSize(11).TextColor(tk.TextTertiary).SingleLine()
+		}
+	})
+	if row.Clicked() {
+		onClick()
+	}
 }

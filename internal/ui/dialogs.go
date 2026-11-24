@@ -18,19 +18,71 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/form"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
-	"github.com/lobehub/lobe-mygo/pkg/nav"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
+
+	"github.com/issueye/ada_t/plugin"
 
 	"ada_chat/internal/app"
 )
 
+// —— 设置弹窗 ——
+//
+// Agent、供应商、常规各自是一个独立弹窗:入口在左下角用户的 Popover 与标题栏齿轮。
+// 三者共用同一份表单(u.settings);保存时按 scope 只校验本弹窗负责的字段,
+// 避免「供应商填错挡住了 Agent 的保存」。
+
+func (u *UI) agentDialog(c *mui.Context) {
+	ok := feedback.Modal(c, &u.agentUp, feedback.ModalProps{
+		Title: "Agent", Width: 560, OkText: "保存", CancelText: "取消",
+	}, func() { u.agentPane(c) })
+	if ok {
+		u.savePrefs(c, "agent")
+	}
+}
+
+func (u *UI) providerDialog(c *mui.Context) {
+	ok := feedback.Modal(c, &u.providerUp, feedback.ModalProps{
+		Title: "供应商", Width: 540, OkText: "保存", CancelText: "取消",
+	}, func() { u.providerPane(c) })
+	if ok {
+		u.savePrefs(c, "provider")
+	}
+}
+
 func (u *UI) settingsDialog(c *mui.Context) {
 	ok := feedback.Modal(c, &u.settingsUp, feedback.ModalProps{
-		Title: "设置", Width: 580, OkText: "保存", CancelText: "取消",
-	}, func() { u.settingsForm(c) })
-	if !ok {
-		return
+		Title: "设置", Width: 560, OkText: "保存", CancelText: "取消",
+	}, func() {
+		u.generalPane(c)
+		if u.hasPluginSlot(plugin.SlotSettingsTab) {
+			mui.Column(c).PaddingY(8).Children(func() { u.pluginSettingsPane(c) })
+		}
+	})
+	if ok {
+		u.savePrefs(c, "general")
 	}
+}
+
+// openAgentSettings / openProviderSettings 把表单重置成已保存的偏好,再打开对应弹窗。
+// 三个入口互斥:同一帧里只允许一个 Modal,否则会叠出两层遮罩。
+func (u *UI) openAgentSettings() {
+	u.settings.ResetTo(u.App.Prefs)
+	u.showKey = false
+	u.userMenu = false
+	u.settingsUp, u.providerUp = false, false
+	u.agentUp = true
+}
+
+func (u *UI) openProviderSettings() {
+	u.settings.ResetTo(u.App.Prefs)
+	u.showKey = false
+	u.userMenu = false
+	u.settingsUp, u.agentUp = false, false
+	u.providerUp = true
+}
+
+// savePrefs 按 scope 只校验这个弹窗负责的字段,然后写回偏好并落盘。
+func (u *UI) savePrefs(c *mui.Context, scope string) {
 	v := u.settings.Values
 	v.Name = strings.TrimSpace(v.Name)
 	v.RuntimePath = strings.TrimSpace(v.RuntimePath)
@@ -39,58 +91,15 @@ func (u *UI) settingsDialog(c *mui.Context) {
 	v.Endpoint = strings.TrimSpace(v.Endpoint)
 	v.Model = strings.TrimSpace(v.Model)
 	v.APIKey = strings.TrimSpace(v.APIKey)
-	switch v.Provider {
-	case "", "openai", "replay":
-	default:
-		u.settingsTab = 1
-		u.settings.SetError("provider", "未知的供应商")
-		c.Invalidate()
+	if scope == "agent" && !u.checkAgent(c, &v) {
 		return
 	}
-	if v.RuntimePath != "" {
-		abs, err := filepath.Abs(v.RuntimePath)
-		if err != nil {
-			u.settingsTab = 0
-			u.settings.SetError("runtime", "路径非法")
-			c.Invalidate()
-			return
-		}
-		if info, err := os.Stat(abs); err != nil || info.IsDir() {
-			u.settingsTab = 0
-			u.settings.SetError("runtime", "文件不存在")
-			c.Invalidate()
-			return
-		}
-		v.RuntimePath = abs
-	}
-	if v.AgentPreset != "" {
-		abs, err := filepath.Abs(v.AgentPreset)
-		if err != nil {
-			u.settingsTab = 0
-			u.settings.SetError("preset", "路径非法")
-			c.Invalidate()
-			return
-		}
-		if info, err := os.Stat(abs); err != nil || info.IsDir() {
-			u.settingsTab = 0
-			u.settings.SetError("preset", "文件不存在")
-			c.Invalidate()
-			return
-		}
-		v.AgentPreset = abs
-	}
-	if v.Provider == "openai" && v.Endpoint != "" {
-		parsed, err := url.Parse(v.Endpoint)
-		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			u.settingsTab = 1
-			u.settings.SetError("endpoint", "必须是 http(s) 地址")
-			c.Invalidate()
-			return
-		}
+	if scope == "provider" && !u.checkProvider(c, &v) {
+		return
 	}
 	u.App.Prefs = v
 	u.settings.ResetTo(v)
-	u.settingsUp = false
+	u.settingsUp, u.agentUp, u.providerUp = false, false, false
 	if err := u.App.SavePrefs(); err != nil {
 		feedback.ShowToast(c, feedback.ToastProps{
 			Title: "设置已保存", Description: "但写入配置文件失败: " + err.Error(), Type: feedback.ToastError,
@@ -100,129 +109,171 @@ func (u *UI) settingsDialog(c *mui.Context) {
 	feedback.ShowToast(c, feedback.ToastProps{Title: "设置已保存", Type: feedback.ToastSuccess})
 }
 
-func (u *UI) settingsForm(c *mui.Context) {
-	nav.Tabs(c, &u.settingsTab, nav.TabsProps{
-		Variant: nav.TabsSquare,
-		Size:    theme.Small,
-		Items: []nav.TabItem{
-			{Label: "Agent", Icon: lucide.Bot()},
-			{Label: "供应商", Icon: lucide.Cpu()},
-			{Label: "常规", Icon: lucide.Settings()},
-		},
-	}, func(i int) { u.settingsPane(c, i) })
+func (u *UI) checkAgent(c *mui.Context, v *app.Prefs) bool {
+	if v.RuntimePath != "" {
+		abs, err := filepath.Abs(v.RuntimePath)
+		if err != nil {
+			u.fieldError(c, "runtime", "路径非法")
+			return false
+		}
+		if info, err := os.Stat(abs); err != nil || info.IsDir() {
+			u.fieldError(c, "runtime", "文件不存在")
+			return false
+		}
+		v.RuntimePath = abs
+	}
+	if v.AgentPreset != "" {
+		abs, err := filepath.Abs(v.AgentPreset)
+		if err != nil {
+			u.fieldError(c, "preset", "路径非法")
+			return false
+		}
+		if info, err := os.Stat(abs); err != nil || info.IsDir() {
+			u.fieldError(c, "preset", "文件不存在")
+			return false
+		}
+		v.AgentPreset = abs
+	}
+	return true
 }
 
-func (u *UI) settingsPane(c *mui.Context, tab int) {
-	f := u.settings
-	switch tab {
-	case 0:
-		form.View(c, f, form.Props[app.Prefs]{
-			Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
-		}, func() {
-			form.Group(c, f, form.GroupProps{
-				Title: "ada_go_v2 Agent",
-				Desc:  "留空时回落到环境变量 ADA_BOT_RUNTIME / ADA_GO_AGENT_PRESET",
-				Fixed: true,
-			}, func() {
-				form.Field(c, f, form.FieldProps{
-					Name: "runtime", Label: "Agent 路径",
-					Desc:  "ada-rpc-agent 可执行文件；新机器人的工作区进程使用它启动",
-					Value: f.Values.RuntimePath,
-				}, func() {
-					u.settingsPath(c, &f.Values.RuntimePath, "runtime", "Agent 路径", "选择 ada-rpc-agent.exe")
-				})
-				form.Field(c, f, form.FieldProps{
-					Name: "preset", Label: "Agent preset",
-					Desc:  "传给 runtime 的 agent.preset.json",
-					Value: f.Values.AgentPreset,
-				}, func() {
-					u.settingsPath(c, &f.Values.AgentPreset, "preset", "Agent preset", "选择 agent.preset.json")
-				})
-			})
-		})
-	case 1:
-		form.View(c, f, form.Props[app.Prefs]{
-			Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
-		}, func() {
-			form.Group(c, f, form.GroupProps{
-				Title: "模型供应商",
-				Desc:  "选择新机器人进程使用的 LLM 供应商；已运行的进程不受影响",
-				Fixed: true,
-			}, func() {
-				form.Field(c, f, form.FieldProps{
-					Name: "provider", Label: "供应商",
-					Desc:  "跟随 preset 时由 agent.preset.json 决定",
-					Value: f.Values.Provider,
-				}, func() {
-					field.Select(c, &f.Values.Provider, field.SelectProps{
-						Variant: field.InputOutlined,
-						Options: []field.SelectOption{
-							{Value: "", Label: "跟随 preset"},
-							{Value: "openai", Label: "OpenAI 兼容", Icon: lucide.Cloud()},
-							{Value: "replay", Label: "Replay（离线脚本）", Icon: lucide.Play()},
-						},
-					}).Label("供应商")
-				})
-				switch f.Values.Provider {
-				case "openai":
-					form.Field(c, f, form.FieldProps{
-						Name: "endpoint", Label: "Endpoint",
-						Desc:  "OpenAI 兼容的 /v1 地址；留空用官方端点",
-						Value: f.Values.Endpoint,
-					}, func() {
-						field.Input(c, &f.Values.Endpoint, field.InputProps{
-							Variant: field.InputOutlined, Placeholder: "https://api.openai.com/v1",
-						}).Label("Endpoint")
-					})
-					form.Field(c, f, form.FieldProps{
-						Name: "model", Label: "模型",
-						Desc:  "请求时使用的模型 ID；留空用 gpt-4o-mini",
-						Value: f.Values.Model,
-					}, func() {
-						field.Input(c, &f.Values.Model, field.InputProps{
-							Variant: field.InputOutlined, Placeholder: "gpt-4o-mini",
-						}).Label("模型")
-					})
-					form.Field(c, f, form.FieldProps{
-						Name: "apiKey", Label: "API Key",
-						Desc:  "保存在本机 config.json；留空时读 ADA_LLM_API_KEY",
-						Value: f.Values.APIKey,
-					}, func() { u.apiKeyInput(c, &f.Values.APIKey) })
-				case "replay":
-					display.Text(c, "Replay 使用 preset 里的离线脚本，不会访问网络。", display.TextProps{
-						Type: display.TextSecondary, FontSize: 12,
-					})
-				}
-			})
-		})
-	case 2:
-		form.View(c, f, form.Props[app.Prefs]{
-			Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
-		}, func() {
-			form.Group(c, f, form.GroupProps{Title: "个人资料", Fixed: true}, func() {
-				form.Field(c, f, form.FieldProps{
-					Name: "name", Label: "显示名称",
-					Desc:  "显示在你发送的消息旁",
-					Value: f.Values.Name,
-				}, func() {
-					stretch(c, func() {
-						field.Input(c, &f.Values.Name, field.InputProps{
-							Variant: field.InputOutlined, Placeholder: "你的名字",
-						}).Label("显示名称")
-					})
-				})
-			})
-			form.Group(c, f, form.GroupProps{Title: "输入", Fixed: true}, func() {
-				form.Field(c, f, form.FieldProps{
-					Name: "enter", Label: "Enter 发送",
-					Desc:  "关闭后 Enter 换行，用 Cmd 或 Ctrl + Enter 发送",
-					Value: f.Values.EnterToSend,
-				}, func() {
-					choiceSwitch(c, &f.Values.EnterToSend, "Enter 发送")
-				})
-			})
-		})
+func (u *UI) checkProvider(c *mui.Context, v *app.Prefs) bool {
+	switch v.Provider {
+	case "", "openai", "replay":
+	default:
+		u.fieldError(c, "provider", "未知的供应商")
+		return false
 	}
+	if v.Provider == "openai" && v.Endpoint != "" {
+		parsed, err := url.Parse(v.Endpoint)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			u.fieldError(c, "endpoint", "必须是 http(s) 地址")
+			return false
+		}
+	}
+	return true
+}
+
+// fieldError 把错误挂到表单字段上并重画这一帧:弹窗保持打开,错误显示在字段下。
+func (u *UI) fieldError(c *mui.Context, name, msg string) {
+	u.settings.SetError(name, msg)
+	c.Invalidate()
+}
+
+func (u *UI) agentPane(c *mui.Context) {
+	f := u.settings
+	form.View(c, f, form.Props[app.Prefs]{
+		Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
+	}, func() {
+		form.Group(c, f, form.GroupProps{
+			Title: "ada_go_v2 Agent",
+			Desc:  "留空时回落到环境变量 ADA_BOT_RUNTIME / ADA_GO_AGENT_PRESET",
+			Fixed: true,
+		}, func() {
+			form.Field(c, f, form.FieldProps{
+				Name: "runtime", Label: "Agent 路径",
+				Desc:  "ada-rpc-agent 可执行文件；新机器人的工作区进程使用它启动",
+				Value: f.Values.RuntimePath,
+			}, func() {
+				u.settingsPath(c, &f.Values.RuntimePath, "runtime", "Agent 路径", "选择 ada-rpc-agent.exe")
+			})
+			form.Field(c, f, form.FieldProps{
+				Name: "preset", Label: "Agent preset",
+				Desc:  "传给 runtime 的 agent.preset.json",
+				Value: f.Values.AgentPreset,
+			}, func() {
+				u.settingsPath(c, &f.Values.AgentPreset, "preset", "Agent preset", "选择 agent.preset.json")
+			})
+		})
+	})
+}
+
+func (u *UI) providerPane(c *mui.Context) {
+	f := u.settings
+	form.View(c, f, form.Props[app.Prefs]{
+		Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
+	}, func() {
+		form.Group(c, f, form.GroupProps{
+			Title: "模型供应商",
+			Desc:  "选择新机器人进程使用的 LLM 供应商；已运行的进程不受影响",
+			Fixed: true,
+		}, func() {
+			form.Field(c, f, form.FieldProps{
+				Name: "provider", Label: "供应商",
+				Desc:  "跟随 preset 时由 agent.preset.json 决定",
+				Value: f.Values.Provider,
+			}, func() {
+				field.Select(c, &f.Values.Provider, field.SelectProps{
+					Variant: field.InputOutlined,
+					Options: []field.SelectOption{
+						{Value: "", Label: "跟随 preset"},
+						{Value: "openai", Label: "OpenAI 兼容", Icon: lucide.Cloud()},
+						{Value: "replay", Label: "Replay（离线脚本）", Icon: lucide.Play()},
+					},
+				}).Label("供应商")
+			})
+			switch f.Values.Provider {
+			case "openai":
+				form.Field(c, f, form.FieldProps{
+					Name: "endpoint", Label: "Endpoint",
+					Desc:  "OpenAI 兼容的 /v1 地址；留空用官方端点",
+					Value: f.Values.Endpoint,
+				}, func() {
+					field.Input(c, &f.Values.Endpoint, field.InputProps{
+						Variant: field.InputOutlined, Placeholder: "https://api.openai.com/v1",
+					}).Label("Endpoint")
+				})
+				form.Field(c, f, form.FieldProps{
+					Name: "model", Label: "模型",
+					Desc:  "请求时使用的模型 ID；留空用 gpt-4o-mini",
+					Value: f.Values.Model,
+				}, func() {
+					field.Input(c, &f.Values.Model, field.InputProps{
+						Variant: field.InputOutlined, Placeholder: "gpt-4o-mini",
+					}).Label("模型")
+				})
+				form.Field(c, f, form.FieldProps{
+					Name: "apiKey", Label: "API Key",
+					Desc:  "保存在本机 config.json；留空时读 ADA_LLM_API_KEY",
+					Value: f.Values.APIKey,
+				}, func() { u.apiKeyInput(c, &f.Values.APIKey) })
+			case "replay":
+				display.Text(c, "Replay 使用 preset 里的离线脚本，不会访问网络。", display.TextProps{
+					Type: display.TextSecondary, FontSize: 12,
+				})
+			}
+		})
+	})
+}
+
+func (u *UI) generalPane(c *mui.Context) {
+	f := u.settings
+	form.View(c, f, form.Props[app.Prefs]{
+		Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
+	}, func() {
+		form.Group(c, f, form.GroupProps{Title: "个人资料", Fixed: true}, func() {
+			form.Field(c, f, form.FieldProps{
+				Name: "name", Label: "显示名称",
+				Desc:  "显示在你发送的消息旁",
+				Value: f.Values.Name,
+			}, func() {
+				stretch(c, func() {
+					field.Input(c, &f.Values.Name, field.InputProps{
+						Variant: field.InputOutlined, Placeholder: "你的名字",
+					}).Label("显示名称")
+				})
+			})
+		})
+		form.Group(c, f, form.GroupProps{Title: "输入", Fixed: true}, func() {
+			form.Field(c, f, form.FieldProps{
+				Name: "enter", Label: "Enter 发送",
+				Desc:  "关闭后 Enter 换行，用 Cmd 或 Ctrl + Enter 发送",
+				Value: f.Values.EnterToSend,
+			}, func() {
+				choiceSwitch(c, &f.Values.EnterToSend, "Enter 发送")
+			})
+		})
+	})
 }
 
 // apiKeyInput 默认遮住密钥，并提供临时显示按钮。
@@ -347,11 +398,18 @@ func (u *UI) renameDialog(c *mui.Context) {
 
 func (u *UI) deleteDialog(c *mui.Context) {
 	tk := theme.TokensOf(c)
+	s := u.App.SessionByID(u.deleteID)
+	if s == nil {
+		s = u.App.Current()
+	}
+	if s == nil {
+		u.confirmDel = false
+		return
+	}
 	ok := feedback.Modal(c, &u.confirmDel, feedback.ModalProps{
 		Title: "删除对话", Width: 440, OkText: "删除", CancelText: "保留",
 	}, func() {
 		mui.Column(c).Gap(8).Children(func() {
-			s := u.App.Current()
 			mui.Row(c).Gap(8).AlignItems(mui.Center).Children(func() {
 				display.Avatar(c, s.Title, display.AvatarProps{Size: 26})
 				mui.Text(c, s.Title).FontSize(14).FontWeight(500).TextColor(tk.Text).SingleLine()
@@ -361,15 +419,11 @@ func (u *UI) deleteDialog(c *mui.Context) {
 		})
 	})
 	if !ok {
-		return
-	}
-	s := u.App.Current()
-	if s == nil {
-		u.confirmDel = false
+		u.deleteID = 0
 		return
 	}
 	at, deleted := u.App.DeleteSession(s.ID)
-	u.confirmDel = false
+	u.confirmDel, u.deleteID = false, 0
 	if !deleted {
 		return
 	}

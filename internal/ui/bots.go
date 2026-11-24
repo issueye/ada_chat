@@ -2,6 +2,8 @@ package ui
 
 import (
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/feedback"
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
+	"github.com/lobehub/lobe-mygo/pkg/nav"
 	"github.com/lobehub/lobe-mygo/pkg/overlay"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
 
@@ -230,6 +233,9 @@ func (u *UI) openBotDialog() {
 	}
 	u.botErr = ""
 	u.botDirErr = ""
+	u.botEnvErr = ""
+	u.botEnvRows = nil
+	u.botTab = 0
 	u.botUp = true
 }
 
@@ -248,7 +254,10 @@ func (u *UI) openBotEdit(b *app.Bot) {
 		Color:       b.Color,
 	}
 	u.botErr = ""
+	u.botEnvErr = ""
+	u.botEnvRows = envRowsOf(b.Env)
 	u.botDirErr = ""
+	u.botTab = 0
 	u.botUp = true
 }
 
@@ -268,17 +277,27 @@ func (u *UI) botDialog(c *mui.Context) {
 		return
 	}
 	// 每次提交都从干净的错误状态开始，失败原因只保留到下一次提交。
-	u.botErr, u.botDirErr = "", ""
+	u.botErr, u.botDirErr, u.botEnvErr = "", "", ""
 	u.botDraft.Name = strings.TrimSpace(u.botDraft.Name)
 	if u.botDraft.Name == "" {
 		u.botErr = "给它起个名字，侧栏里才认得出来"
+		u.botTab = 0
 		c.Invalidate()
 		return
 	}
+	env, envErr := rowsToEnv(u.botEnvRows)
+	if envErr != "" {
+		u.botEnvErr = envErr
+		u.botTab = 2
+		c.Invalidate()
+		return
+	}
+	u.botDraft.Env = env
 	if u.botEditID != 0 {
 		bot, err := u.App.UpdateBot(u.botEditID, u.botDraft)
 		if err != nil {
 			u.botDirErr = err.Error()
+		u.botTab = 0
 			c.Invalidate()
 			return
 		}
@@ -292,6 +311,7 @@ func (u *UI) botDialog(c *mui.Context) {
 	bot, err := u.App.AddBot(u.botDraft)
 	if err != nil {
 		u.botDirErr = err.Error()
+		u.botTab = 0
 		c.Invalidate()
 		return
 	}
@@ -302,14 +322,48 @@ func (u *UI) botDialog(c *mui.Context) {
 	})
 }
 
+// botFormBody 是机器人对话框的主体:预览常驻,其余按三页归类
+// (基本 / 提示词 / 环境变量),避免表单越加越长。
 func (u *UI) botFormBody(c *mui.Context, tk *theme.Tokens) {
-	d := &u.botDraft
-	mui.Column(c).Gap(16).Children(func() {
+	mui.Column(c).Gap(12).Children(func() {
 		u.botPreview(c, tk)
 		if u.botEditID != 0 {
-			mui.Text(c, "改名与图标立即生效；工作目录改动会重启该机器人的进程；系统提示词在下一次进程启动时生效。").
+			mui.Text(c, "改名与图标立即生效；工作目录或环境变量改动会重启该机器人的进程；系统提示词在下一次进程启动时生效。").
 				FontSize(11).TextColor(tk.TextTertiary)
 		}
+		nav.Tabs(c, &u.botTab, nav.TabsProps{
+			Variant: nav.TabsSquare,
+			Size:    theme.Small,
+			Items: []nav.TabItem{
+				{Label: "基本", Icon: lucide.Bot()},
+				{Label: "提示词", Icon: lucide.MessageSquare()},
+				{Label: "环境变量", Icon: lucide.Terminal()},
+			},
+		}, func(i int) { u.botPane(c, tk, i) })
+	})
+}
+
+// botPane 是机器人对话框的一页。校验错误按页归位:保存失败时由 botDialog
+// 切到对应页,不把用户丢在一屏之外。
+func (u *UI) botPane(c *mui.Context, tk *theme.Tokens, tab int) {
+	d := &u.botDraft
+	switch tab {
+	case 1:
+		mui.Column(c).Gap(12).Children(func() {
+			botField(c, tk, "系统提示词", false, "每轮对话都会放在最前面，告诉它该怎么做", func() {
+				field.TextArea(c, &d.Instruction, field.TextAreaProps{
+					Variant: field.InputOutlined, Placeholder: "例如：回答前先读一遍相关代码，再给出具体改动",
+					MinRows: 3, MaxRows: 6,
+				}).Label("系统提示词")
+			})
+		})
+	case 2:
+		mui.Column(c).Gap(12).Children(func() {
+			botField(c, tk, "环境变量", false, "只对这个机器人的进程生效；同名变量覆盖全局设置，环境不同会各起一个进程", func() {
+				u.botEnvEditor(c, tk)
+			})
+		})
+	default:
 		mui.Column(c).Gap(12).Children(func() {
 			botField(c, tk, "名称", true, "侧栏和对话里都用这个名字", func() {
 				field.Input(c, &d.Name, field.InputProps{
@@ -345,15 +399,9 @@ func (u *UI) botFormBody(c *mui.Context, tk *theme.Tokens) {
 					MinRows: 2, MaxRows: 3,
 				}).Label("介绍")
 			})
-			botField(c, tk, "系统提示词", false, "每轮对话都会放在最前面，告诉它该怎么做", func() {
-				field.TextArea(c, &d.Instruction, field.TextAreaProps{
-					Variant: field.InputOutlined, Placeholder: "例如：回答前先读一遍相关代码，再给出具体改动",
-					MinRows: 2, MaxRows: 4,
-				}).Label("系统提示词")
-			})
+			botField(c, tk, "图标", false, "挑一个一眼认得出的符号", func() { u.iconPicker(c, tk) })
 		})
-		botField(c, tk, "图标", false, "挑一个一眼认得出的符号", func() { u.iconPicker(c, tk) })
-	})
+	}
 }
 
 // botField 是对话框里紧凑的一栏：标题、说明在上，控件在下。
@@ -452,4 +500,90 @@ func pickFolder() (string, error) {
 		return "", err
 	}
 	return paths[0], nil
+}
+
+type botEnvRow struct{ Key, Value string }
+
+// envNameRe 与 shell 的变量名一致:字母、数字、下划线,不能以数字开头。
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// envRowsOf 把机器人保存的环境变量摊成可编辑的行(按键名排序,避免每帧跳动)。
+func envRowsOf(env map[string]string) []botEnvRow {
+	if len(env) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rows := make([]botEnvRow, 0, len(names))
+	for _, name := range names {
+		rows = append(rows, botEnvRow{Key: name, Value: env[name]})
+	}
+	return rows
+}
+
+// rowsToEnv 校验并合并编辑行:空行忽略、空值等于不设置、重名与非法名报错。
+func rowsToEnv(rows []botEnvRow) (map[string]string, string) {
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Key)
+		value := row.Value
+		if name == "" && strings.TrimSpace(value) == "" {
+			continue
+		}
+		if !envNameRe.MatchString(name) {
+			return nil, "环境变量名只能由字母、数字与下划线组成,且不能以数字开头: " + name
+		}
+		if _, dup := out[name]; dup {
+			return nil, "环境变量名重复: " + name
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil, ""
+	}
+	return out, ""
+}
+
+// botEnvEditor 是「环境变量」一栏:每行 变量名 + 值 + 删除,底部一个添加按钮。
+// 这些值只对这个机器人的进程生效(环境不同会另起进程);它们写进 state.json(0600),
+// 与全局供应商设置是两回事:同名变量时以这里为准。
+func (u *UI) botEnvEditor(c *mui.Context, tk *theme.Tokens) {
+	remove := -1
+	mui.Column(c).Gap(6).Children(func() {
+		for i := range u.botEnvRows {
+			i := i
+			mui.Row(c).Gap(6).AlignItems(mui.Center).Children(func() {
+				mui.Column(c).Width(170).Children(func() {
+					field.Input(c, &u.botEnvRows[i].Key, field.InputProps{
+						Variant: field.InputOutlined, Placeholder: "ADA_LLM_API_KEY",
+					}).Label("变量名")
+				})
+				mui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+					field.Input(c, &u.botEnvRows[i].Value, field.InputProps{
+						Variant: field.InputOutlined, Placeholder: "值（留空等于不设置）",
+					}).Label("变量值")
+				})
+				if action.ActionIcon(c, lucide.Trash2(), small("删除变量")).Clicked() {
+					remove = i
+				}
+			})
+		}
+		if u.botEnvErr != "" {
+			mui.Text(c, u.botEnvErr).FontSize(11).TextColor(tk.Error)
+		}
+		mui.Row(c).Children(func() {
+			if action.Button(c, "添加变量", action.ButtonProps{Size: theme.Small}).Clicked() {
+				u.botEnvRows = append(u.botEnvRows, botEnvRow{})
+			}
+		})
+	})
+	if remove >= 0 {
+		u.botEnvRows = append(u.botEnvRows[:remove], u.botEnvRows[remove+1:]...)
+	}
 }
