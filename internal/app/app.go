@@ -601,6 +601,7 @@ func (a *App) StopTurn() bool {
 		}
 	}
 	last.Streaming = false
+	collapseReasoning(last)
 	s.Preview = Clip(last.Text, 88)
 	s.Updated = a.now()
 	a.removeApprovals(s.BotID, last.ID)
@@ -973,6 +974,16 @@ func (a *App) OpenBotChat(id int) bool {
 	return true
 }
 
+// collapseReasoning 收起一段已经结束的思考:思考块只在流入时展开,
+// 之后出现文字/工具、或这一轮结束,都把它折回标题行,用户需要再点开。
+func collapseReasoning(m *Message) {
+	for i := range m.Parts {
+		if m.Parts[i].Kind == PartReasoning {
+			m.Parts[i].Open = false
+		}
+	}
+}
+
 // BotDelta 追加机器人流式回答的一段文本。
 func (a *App) BotDelta(botID, turn int, chunk string) {
 	a.apply(func() {
@@ -986,6 +997,7 @@ func (a *App) BotDelta(botID, turn int, chunk string) {
 					// 工具调用会把一段文本截断：后续增量要开一个新的文本块，
 					// 这样界面按真实顺序显示“文字 → 工具 → 文字”。
 					if n := len(m.Parts); n == 0 || m.Parts[n-1].Kind != PartText {
+						collapseReasoning(m)
 						m.Parts = append(m.Parts, Part{Kind: PartText, Text: chunk})
 					} else {
 						m.Parts[n-1].Text += chunk
@@ -1011,6 +1023,7 @@ func (a *App) BotReasoning(botID, turn int, chunk string) {
 					continue
 				}
 				if n := len(m.Parts); n == 0 || m.Parts[n-1].Kind != PartReasoning {
+					collapseReasoning(m)
 					m.Parts = append(m.Parts, Part{Kind: PartReasoning, Text: chunk, Open: true})
 				} else {
 					m.Parts[n-1].Text += chunk
@@ -1040,6 +1053,7 @@ func (a *App) BotTool(botID, turn int, ev ToolEvent) {
 				break
 			}
 		}
+		collapseReasoning(m)
 		if call == nil {
 			// 工具卡片默认折叠:标题行始终显示状态与耗时,参数和结果等用户点开再看。
 			call = &ToolCall{ID: ev.ID}
@@ -1166,6 +1180,7 @@ func (a *App) BotTurnDone(botID, turn int, final string) {
 				}
 			}
 			m.Streaming = false
+			collapseReasoning(m)
 			s.Preview = Clip(m.Text, 88)
 			s.Updated = a.now()
 			a.removeApprovals(botID, turn)
@@ -1192,6 +1207,7 @@ func (a *App) BotTurnFailed(botID, turn int, reason string) {
 			m.Parts = append(m.Parts, Part{Kind: PartText, Text: "（连接中断：" + reason + "）"})
 		}
 		m.Streaming = false
+		collapseReasoning(m)
 		s.Preview = Clip(m.Text, 88)
 		a.removeApprovals(botID, turn)
 		a.persist()

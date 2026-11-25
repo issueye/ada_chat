@@ -71,21 +71,24 @@ func toolCard(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
 			mui.Icon(c, lucide.ChevronDown()).FontSize(14).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
 		})
 		p.Panel(func() {
-			// 上下留白与左右一致：标题行 10 + 面板 2，标签距上边框正好 12。
-			mui.Column(c).Padding(2, 12, 12, 12).Gap(6).Children(func() {
-				mui.Text(c, "参数").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary)
-				code.Snippet(c, call.Args, code.SnippetProps{Language: "json", Variant: code.Filled, FontSize: 12})
-				if call.State == app.ToolRunning {
-					return
-				}
-				mui.Text(c, "结果").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary).Margin(4, 0, 0, 0)
-				if call.State == app.ToolFailed {
-					feedback.Alert(c, "工具没有跑完", feedback.AlertProps{
-						Type: feedback.Error, Variant: feedback.Plain, Description: call.Result, Selectable: true,
-					})
-					return
-				}
-				markdown.Markdown(c, call.Result, markdown.MarkdownProps{Variant: markdown.Chat, FontSize: 13})
+			// 展开内容限高并在内部滚动:工具结果可能是整页 HTML,不能让卡片顶穿整条对话。
+			mui.Scroll(c).MaxHeight(320).MaxWidthPercent(100).Children(func() {
+				// 上下留白与左右一致：标题行 10 + 面板 2，标签距上边框正好 12。
+				mui.Column(c).Padding(2, 12, 12, 12).Gap(6).Children(func() {
+					mui.Text(c, "参数").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary)
+					code.Snippet(c, call.Args, code.SnippetProps{Language: "json", Variant: code.Filled, FontSize: 12})
+					if call.State == app.ToolRunning {
+						return
+					}
+					mui.Text(c, "结果").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary).Margin(4, 0, 0, 0)
+					if call.State == app.ToolFailed {
+						feedback.Alert(c, "工具没有跑完", feedback.AlertProps{
+							Type: feedback.Error, Variant: feedback.Plain, Description: call.Result, Selectable: true,
+						})
+						return
+					}
+					markdown.Markdown(c, call.Result, markdown.MarkdownProps{Variant: markdown.Chat, FontSize: 13})
+				})
 			})
 		})
 	})
