@@ -94,8 +94,8 @@ func (u *UI) botSection(c *mui.Context) {
 	mui.Column(c).Gap(2).Children(func() {
 		mui.Row(c).Padding(10, 8, 2, 8).Gap(6).AlignItems(mui.Center).Children(func() {
 			display.Text(c, "机器人", display.TextProps{Type: display.TextSecondary, FontSize: 11, Strong: true})
-			mui.Spacer(c)
-			display.Text(c, strconv.Itoa(len(bots)), display.TextProps{Type: display.TextSecondary, FontSize: 11})
+			// mui.Spacer(c)
+			// display.Text(c, strconv.Itoa(len(bots)), display.TextProps{Type: display.TextSecondary, FontSize: 11})
 		})
 		for _, b := range bots {
 			u.botRow(c, tk, b, active == b.ID)

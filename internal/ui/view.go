@@ -11,8 +11,12 @@ import (
 	"ada_chat/internal/plugins"
 )
 
-// TitleBarHeight 是窗口自绘标题栏的高度，与 cmd 里的窗口参数共用。
-const TitleBarHeight = 44
+// TitleBarHeight 是窗口自绘标题栏的高度，与 window.go 的窗口参数共用。
+//
+// 取 36：Windows 11 自己的标题栏是 32，Linux 桌面用 header bar 的高度；
+// 44 会让顶部留白比内容区还高，而 24 的头像 + 13 号标题在 36 里仍有 6px 余量。
+// 标题栏行本身读 c.TitleBar().Height，所以这里一处调，窗口按钮区与自绘行一起变。
+const TitleBarHeight = 36
 
 // UI 是视图自己的状态：面板开合、搜索词、当前展开的菜单、表单和滚动位置。
 type UI struct {

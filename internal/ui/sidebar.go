@@ -6,13 +6,13 @@ import (
 	"time"
 
 	mui "github.com/egoist/mygo/ui"
-	"github.com/lobehub/lobe-mygo/pkg/action"
 	"github.com/lobehub/lobe-mygo/pkg/display"
 	"github.com/lobehub/lobe-mygo/pkg/feedback"
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
 	"github.com/lobehub/lobe-mygo/pkg/motion"
+	"github.com/lobehub/lobe-mygo/pkg/overlay"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
 
 	"ada_chat/internal/app"
@@ -165,25 +165,30 @@ func (u *UI) sessionRow(c *mui.Context, tk *theme.Tokens, s *app.Session, active
 			display.Text(c, app.RelativeTime(c.Now(), s.Updated), display.TextProps{Type: display.TextSecondary, FontSize: 12})
 		}
 	})
-		// 右键菜单:复制会话 id、归档/取消归档、移除(移除走确认弹窗)。
-		row = row.ContextMenu(func(m *mui.Menu) {
-			if m.Item("复制会话 ID").Chosen() {
-				c.WriteClipboard(strconv.Itoa(s.ID))
-				feedback.ShowToast(c, feedback.ToastProps{Title: "已复制会话 ID", Description: "s-" + strconv.Itoa(s.ID), Type: feedback.ToastSuccess})
-			}
-			archiveLabel := "归档"
-			if s.Archived {
-				archiveLabel = "取消归档"
-			}
-			if m.Item(archiveLabel).Chosen() {
-				u.App.ArchiveSession(s.ID, !s.Archived)
-			}
-			m.Separator()
-			if m.Item("移除").Chosen() {
-				u.deleteID = s.ID
-				u.confirmDel = true
-			}
-		})
+	// 右键菜单与会话行、机器人行共用 overlay.ContextMenu:
+	// 系统菜单(mui.Menu)由宿主绘制,字体、行高、分隔线与阴影都与窗口内的
+	// 机器人菜单不同,两条侧栏行摆在一起就会像两个产品。
+	archiveLabel, archiveKey, archiveIcon := "归档", "archive", lucide.Archive()
+	if s.Archived {
+		archiveLabel, archiveKey, archiveIcon = "取消归档", "unarchive", lucide.ArchiveRestore()
+	}
+	switch overlay.ContextMenu(c, row, overlay.DropdownMenuProps{Items: []overlay.MenuItem{
+		{Key: "copy", Label: "复制会话 ID", Icon: lucide.Copy()},
+		{Key: archiveKey, Label: archiveLabel, Icon: archiveIcon},
+		{Divider: true},
+		{Key: "remove", Label: "移除", Icon: lucide.Trash2(), Danger: true},
+	}}) {
+	case "copy":
+		c.WriteClipboard(strconv.Itoa(s.ID))
+		feedback.ShowToast(c, feedback.ToastProps{Title: "已复制会话 ID", Description: "s-" + strconv.Itoa(s.ID), Type: feedback.ToastSuccess})
+	case "archive":
+		u.App.ArchiveSession(s.ID, true)
+	case "unarchive":
+		u.App.ArchiveSession(s.ID, false)
+	case "remove":
+		u.deleteID = s.ID
+		u.confirmDel = true
+	}
 	return row.Clicked()
 }
 
@@ -236,7 +241,6 @@ func (u *UI) sidebarFooter(c *mui.Context) {
 			display.Avatar(c, u.App.UserName(), display.AvatarProps{Size: 26})
 			mui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
 				mui.Text(c, u.App.UserName()).FontSize(13).FontWeight(500).TextColor(tk.Text).SingleLine()
-				mui.Text(c, "本地会话").FontSize(11).TextColor(tk.TextTertiary).SingleLine()
 			})
 			// 展开时箭头朝下,收起时朝上:同一帧里跟着状态变。
 			icon := lucide.ChevronUp()
@@ -249,15 +253,12 @@ func (u *UI) sidebarFooter(c *mui.Context) {
 			u.userMenu = !u.userMenu
 		}
 		mui.Popover(c, user, &u.userMenu, func() {
-			mui.Column(c).Gap(2).Width(200).Padding(4).Children(func() {
+			mui.Column(c).Gap(2).Width(300).Padding(4).Children(func() {
 				u.menuRow(c, tk, lucide.Bot(), "Agent", "路径", u.openAgentSettings)
 				u.menuRow(c, tk, lucide.Cpu(), "供应商", "模型", u.openProviderSettings)
 				u.menuRow(c, tk, lucide.SlidersHorizontal(), "常规设置", "名称", u.openSettings)
 			})
 		})
-		if action.ActionIcon(c, lucide.CircleHelp(), small("帮助")).Clicked() {
-			c.OpenURL("https://mygo.lobehub.com")
-		}
 	})
 }
 
