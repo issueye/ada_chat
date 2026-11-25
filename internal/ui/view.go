@@ -7,6 +7,8 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/form"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
 
+	"github.com/egoist/mygo"
+
 	"ada_chat/internal/app"
 	"ada_chat/internal/plugins"
 )
@@ -21,6 +23,10 @@ const TitleBarHeight = 36
 // UI 是视图自己的状态：面板开合、搜索词、当前展开的菜单、表单和滚动位置。
 type UI struct {
 	App *app.App
+
+	// win is the window this view draws in. On Windows the title bar is
+	// frameless and its minimize/maximize/close controls call back into it.
+	win *mygo.Window
 
 	sidebarWidth float32
 	sidebarOpen  bool
@@ -101,6 +107,9 @@ func New(a *app.App) *UI {
 
 // SetDispatch 让目录选择这类异步 UI 改动回到 UI 线程。
 func (u *UI) SetDispatch(fn func(func())) { u.dispatch = fn }
+
+// SetWindow 把窗口交给视图，标题栏的窗口按钮用它最小化、最大化与关闭。
+func (u *UI) SetWindow(w *mygo.Window) { u.win = w }
 
 // SetPlugins 接上插件宿主（在开窗前调用）。
 func (u *UI) SetPlugins(h *plugins.Host) { u.Plugins = h }

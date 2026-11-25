@@ -297,7 +297,7 @@ func (u *UI) botDialog(c *mui.Context) {
 		bot, err := u.App.UpdateBot(u.botEditID, u.botDraft)
 		if err != nil {
 			u.botDirErr = err.Error()
-		u.botTab = 0
+			u.botTab = 0
 			c.Invalidate()
 			return
 		}

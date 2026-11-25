@@ -55,6 +55,7 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		win = mygo.NewWindow(ui.WindowOptions(view))
+		view.SetWindow(win)
 	})
 	runErr := mygo.App.Run()
 	if host != nil {

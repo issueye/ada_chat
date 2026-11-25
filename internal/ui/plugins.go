@@ -2,8 +2,8 @@ package ui
 
 import (
 	mui "github.com/egoist/mygo/ui"
-	"github.com/lobehub/lobe-mygo/pkg/display"
 	"github.com/issueye/ada_t/plugin"
+	"github.com/lobehub/lobe-mygo/pkg/display"
 )
 
 // pluginSlot 把某个槽位的插件视图画进当前布局。

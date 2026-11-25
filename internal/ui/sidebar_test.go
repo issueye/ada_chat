@@ -107,4 +107,3 @@ func TestRunningSessionRowKeepsTitle(t *testing.T) {
 		t.Fatalf("侧栏行应以会话标题作为可访问名字")
 	}
 }
-

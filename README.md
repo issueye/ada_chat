@@ -26,6 +26,12 @@ go run ./cmd/ada_chat
 设置分成了三个独立弹窗，入口在**左下角用户区的 Popover**（点用户名弹出），
 标题栏的齿轮仍然直接打开「设置（常规）」：
 
+窗口标题栏：Windows 使用无边框窗口（Frameless）并自绘最小化、最大化/还原、关闭按钮，
+按钮颜色跟随明暗主题；这同时避开了 Windows 10 聚焦时那圈系统白色非客户区边框。
+macOS/Linux 仍使用隐藏系统标题栏（TitleBarHidden），保留系统自己的窗口按钮。
+Windows 的自绘最大化按钮不提供 Windows 11 的 Snap Layouts 悬浮面板；窗口拖动与
+双击标题栏最大化/还原仍可用。
+
 - **Agent**（Popover → Agent）：`Agent 路径`（`ada-rpc-agent` 可执行文件）与 `Agent preset`
   （`agent.preset.json`），都可以直接输入或打开文件选择器；
 - **供应商**（Popover → 供应商）：**左右布局的供应商管理**——左边是供应商列表（可添加/切换/删除），
