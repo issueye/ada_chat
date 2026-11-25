@@ -118,6 +118,11 @@ func (u *UI) savePrefs(c *mui.Context, scope string) {
 	if scope == "provider" && !u.checkProvider(c, &v) {
 		return
 	}
+	// 设置表单是启动时的快照:供应商/标签可能已在别处改过,以 App 上的为准。
+	v.Providers = u.App.Prefs.Providers
+	v.ActiveProvider = u.App.Prefs.ActiveProvider
+	v.ThinkingTags = u.App.Prefs.ThinkingTags
+	v.SyncLegacy()
 	u.App.Prefs = v
 	u.settings.ResetTo(v)
 	u.settingsUp, u.agentUp, u.providerUp = false, false, false

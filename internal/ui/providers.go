@@ -506,6 +506,15 @@ func (u *UI) deleteModelAt(index int) {
 
 // saveProviders 校验整份供应商列表,写回偏好并同步旧的单供应商字段。
 func (u *UI) saveProviders(c *mui.Context) {
+	// 模型编辑器还开着就先提交:外层「保存」不应丢掉正在填的参数。
+	if u.modelEditor {
+		u.commitModel(&u.providerList[u.providerIdx])
+		if u.modelEditor {
+			u.providerErr = "模型参数未保存: " + u.modelErr
+			c.Invalidate()
+			return
+		}
+	}
 	if len(u.providerList) == 0 {
 		u.providerErr = "至少保留一个供应商"
 		c.Invalidate()

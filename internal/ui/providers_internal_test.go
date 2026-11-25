@@ -1,6 +1,7 @@
 package ui
 
 import "testing"
+import "ada_chat/internal/app"
 
 // TestRemoveThinkingTag 守住标签移除:从集合里删掉,若正是当前选中则一起清空。
 func TestRemoveThinkingTag(t *testing.T) {
@@ -37,5 +38,32 @@ func TestAddThinkingTag(t *testing.T) {
 	u.addThinkingTag()
 	if len(u.providerTags) != 2 {
 		t.Fatalf("重复标签不应新增: %v", u.providerTags)
+	}
+}
+
+// TestCommitModelFields 守住模型参数写入:数字字段解析进 ModelSpec,编辑器关闭。
+func TestCommitModelFields(t *testing.T) {
+	u := &UI{
+		providerList:  []app.Provider{{ID: "p", Name: "P", Models: []app.ModelSpec{{ID: "m1"}}}},
+		providerIdx:   0,
+		modelEditor:   true,
+		modelEdit:     -1,
+		modelID:       "m2",
+		modelCtx:      "131072",
+		modelMax:      "8192",
+		modelSummary:  "80",
+		modelThinking: "high",
+	}
+	u.commitModel(&u.providerList[0])
+	if u.modelEditor {
+		t.Fatalf("保存成功后编辑器应关闭: %q", u.modelErr)
+	}
+	p := &u.providerList[0]
+	if len(p.Models) != 2 || p.Models[1].ID != "m2" {
+		t.Fatalf("模型没有加入列表: %+v", p.Models)
+	}
+	m := p.Models[1]
+	if m.ContextWindow != 131072 || m.MaxOutput != 8192 || m.SummaryThreshold != 80 || m.Thinking != "high" {
+		t.Fatalf("模型参数没有写入: %+v", m)
 	}
 }

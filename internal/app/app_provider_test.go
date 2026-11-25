@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // TestEnsureProvidersMigratesLegacy 守住旧配置迁移:单供应商字段变成一条列表记录,
 // 并回填 ActiveProvider 与模型。
@@ -54,5 +57,38 @@ func TestEnsureProvidersFillsDefaults(t *testing.T) {
 	}
 	if len(p.ThinkingTags) != 3 || p.ThinkingTags[0] != "low" || p.ThinkingTags[1] != "medium" || p.ThinkingTags[2] != "high" {
 		t.Fatalf("默认思考标签应为 low/medium/high: %v", p.ThinkingTags)
+	}
+}
+
+// TestProviderModelParamsPersist 守住模型参数落盘:保存后重新加载仍在。
+func TestProviderModelParamsPersist(t *testing.T) {
+	dir := t.TempDir()
+	restore := SetConfigPath(filepath.Join(dir, "config.json"))
+	t.Cleanup(restore)
+
+	a := New()
+	a.Prefs.Providers = []Provider{{
+		ID: "p", Name: "P", Kind: "openai", Endpoint: "https://api.deepseek.com", APIKey: "sk-x",
+		Model: "m", Models: []ModelSpec{{
+			ID: "m", ContextWindow: 131072, MaxOutput: 8192, SummaryThreshold: 80, Thinking: "high",
+		}},
+	}}
+	a.Prefs.ActiveProvider = "p"
+	a.Prefs.ThinkingTags = []string{"low", "high"}
+	a.Prefs.SyncLegacy()
+	if err := a.SavePrefs(); err != nil {
+		t.Fatalf("保存偏好失败: %v", err)
+	}
+
+	b := New()
+	if len(b.Prefs.Providers) != 1 || len(b.Prefs.Providers[0].Models) != 1 {
+		t.Fatalf("重启后供应商/模型丢失: %+v", b.Prefs.Providers)
+	}
+	m := b.Prefs.Providers[0].Models[0]
+	if m.ContextWindow != 131072 || m.MaxOutput != 8192 || m.SummaryThreshold != 80 || m.Thinking != "high" {
+		t.Fatalf("模型参数没有落盘: %+v", m)
+	}
+	if len(b.Prefs.ThinkingTags) != 2 {
+		t.Fatalf("思考标签没有落盘: %v", b.Prefs.ThinkingTags)
 	}
 }
