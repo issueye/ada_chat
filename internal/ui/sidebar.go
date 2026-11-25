@@ -257,6 +257,11 @@ func (u *UI) sidebarFooter(c *mui.Context) {
 				u.menuRow(c, tk, lucide.Bot(), "Agent", "路径", u.openAgentSettings)
 				u.menuRow(c, tk, lucide.Cpu(), "供应商", "模型", u.openProviderSettings)
 				u.menuRow(c, tk, lucide.SlidersHorizontal(), "常规设置", "名称", u.openSettings)
+				icon, hint := lucide.Moon(), "浅色"
+				if theme.TokensOf(c).Dark {
+					icon, hint = lucide.Sun(), "深色"
+				}
+				u.menuRow(c, tk, icon, "明暗切换", hint, func() { u.toggleTheme(c) })
 			})
 		})
 	})
@@ -284,4 +289,22 @@ func (u *UI) menuRow(c *mui.Context, tk *theme.Tokens, icon *mui.SVG, title, hin
 	if row.Clicked() {
 		onClick()
 	}
+}
+
+// toggleTheme 在浅色/深色之间切换并落盘;跟随系统时按当前实际外观决定切到哪一边。
+func (u *UI) toggleTheme(c *mui.Context) {
+	dark := theme.TokensOf(c).Dark
+	switch u.App.Prefs.Theme {
+	case "dark":
+		u.App.Prefs.Theme = "light"
+	case "light":
+		u.App.Prefs.Theme = "dark"
+	default:
+		if dark {
+			u.App.Prefs.Theme = "light"
+		} else {
+			u.App.Prefs.Theme = "dark"
+		}
+	}
+	_ = u.App.SavePrefs()
 }

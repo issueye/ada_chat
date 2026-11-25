@@ -60,6 +60,8 @@ type Session struct {
 type Prefs struct {
 	Name        string `json:"name,omitempty"`
 	EnterToSend bool   `json:"enterToSend"`
+	// Theme 是外观:"light" / "dark";空字符串表示跟随系统。
+	Theme string `json:"theme,omitempty"`
 	// RuntimePath 是 ada_go_v2 的 RPC bot 可执行文件（ada-rpc-agent）路径。
 	RuntimePath string `json:"runtimePath,omitempty"`
 	// AgentPreset 是传给 runtime 的 agent preset 文件路径。

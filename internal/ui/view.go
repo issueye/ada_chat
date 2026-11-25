@@ -107,7 +107,7 @@ func (u *UI) SetPlugins(h *plugins.Host) { u.Plugins = h }
 
 // Root 是窗口的内容：每帧由 MyGo 调用，按状态重建。
 func (u *UI) Root(c *mui.Context) {
-	theme.Apply(c)
+	u.applyTheme(c)
 	tk := theme.TokensOf(c)
 	// 插件:发布只读快照(服务线程不直接读 App)、外观切换时下发主题
 	if u.Plugins != nil {
@@ -142,4 +142,16 @@ func (u *UI) resetListIfSwitched() {
 	}
 	u.activeID = u.App.ActiveID
 	u.chatList = mui.ListState{}
+}
+
+// applyTheme 按偏好的明暗模式切换主题;偏好为空时跟随系统。
+func (u *UI) applyTheme(c *mui.Context) {
+	switch u.App.Prefs.Theme {
+	case "light":
+		c.SetTheme(theme.Default().Theme(false))
+	case "dark":
+		c.SetTheme(theme.Default().Theme(true))
+	default:
+		theme.Apply(c)
+	}
 }

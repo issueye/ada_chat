@@ -291,6 +291,22 @@ func (u *UI) generalPane(c *mui.Context) {
 			})
 		})
 		form.Group(c, f, form.GroupProps{Title: "输入", Fixed: true}, func() {
+			form.Group(c, f, form.GroupProps{Title: "外观", Fixed: true}, func() {
+				form.Field(c, f, form.FieldProps{
+					Name: "theme", Label: "外观",
+					Desc:  "跟随系统,或固定浅色/深色",
+					Value: f.Values.Theme,
+				}, func() {
+					field.Select(c, &f.Values.Theme, field.SelectProps{
+						Variant: field.InputOutlined,
+						Options: []field.SelectOption{
+							{Value: "", Label: "跟随系统", Icon: lucide.Monitor()},
+							{Value: "light", Label: "浅色", Icon: lucide.Sun()},
+							{Value: "dark", Label: "深色", Icon: lucide.Moon()},
+						},
+					}).Label("外观")
+				})
+			})
 			form.Field(c, f, form.FieldProps{
 				Name: "enter", Label: "Enter 发送",
 				Desc:  "关闭后 Enter 换行，用 Cmd 或 Ctrl + Enter 发送",
