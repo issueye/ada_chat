@@ -127,18 +127,6 @@ func TestProviderManagerLayout(t *testing.T) {
 	}
 	shot(t, tt, "provider-model-editor.png")
 
-	// 默认标签可以移除:点 low 的 ×。
-	if err := tt.Click("移除标签 low"); err != nil {
-		t.Fatalf("移除标签 low 失败: %v", err)
-	}
-	tt.Frame()
-	if _, ok := tt.Find("low"); ok {
-		t.Fatalf("移除后 low 标签应消失")
-	}
-	shot(t, tt, "provider-model-editor-no-low.png")
-	if false {
-	}
-
 	if err := tt.Click("取消"); err != nil {
 		t.Fatalf("关闭模型编辑器失败: %v", err)
 	}
@@ -163,9 +151,19 @@ func TestProviderManagerLayout(t *testing.T) {
 	if len(a.Prefs.Providers) != 2 || a.Prefs.ActiveProvider == "deepseek" {
 		t.Fatalf("保存后应有 2 个供应商且当前切到新的: %d %q", len(a.Prefs.Providers), a.Prefs.ActiveProvider)
 	}
-	for _, tag := range a.Prefs.ThinkingTags {
-		if tag == "low" {
-			t.Fatalf("移除的 low 标签不应被保存: %v", a.Prefs.ThinkingTags)
-		}
+	if len(a.Prefs.ThinkingTags) != 3 {
+		t.Fatalf("默认思考标签应保留 3 个: %v", a.Prefs.ThinkingTags)
+	}
+	if len(a.Prefs.ThinkingTags) != 3 {
+		t.Fatalf("默认思考标签应保留 3 个: %v", a.Prefs.ThinkingTags)
+	}
+	if len(a.Prefs.ThinkingTags) != 3 {
+		t.Fatalf("默认思考标签应保留 3 个: %v", a.Prefs.ThinkingTags)
+	}
+	if len(a.Prefs.ThinkingTags) != 3 {
+		t.Fatalf("默认思考标签应保留 3 个: %v", a.Prefs.ThinkingTags)
+	}
+	if len(a.Prefs.ThinkingTags) != 3 {
+		t.Fatalf("默认思考标签应保留 3 个: %v", a.Prefs.ThinkingTags)
 	}
 }

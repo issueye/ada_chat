@@ -310,30 +310,30 @@ func (u *UI) modelEditorCard(c *mui.Context, tk *theme.Tokens, p *app.Provider) 
 		})
 		mui.Column(c).Gap(4).Children(func() {
 			label("思考级别(点标签选中,× 移除;也可新增自定义标签)")
+			before := u.modelThinking
 			removeTag := ""
 			mui.Row(c).Gap(6).AlignItems(mui.Center).Wrap().Children(func() {
 				for _, tag := range u.providerTags {
 					tag := tag
-					mui.Row(c).Gap(2).AlignItems(mui.Center).Children(func() {
-						b := mui.ButtonBase(c).Label(tag).Padding(3, 10).Radius(999).FontSize(11).
-							Cursor(mui.CursorPointer)
-						bg, fg := tk.FillSecondary, tk.TextSecondary
-						if u.modelThinking == tag {
-							bg, fg = tk.PrimaryBg, tk.Primary
-						}
-						b.Background(bg).TextColor(fg).Children(func() {
-							mui.Text(c, tag).FontSize(11).TextColor(fg)
-						})
-						if b.Clicked() {
-							u.modelThinking = tag
-						}
-						if action.ActionIcon(c, lucide.X(), small("移除标签 "+tag)).Clicked() {
-							removeTag = tag
-						}
-					})
+					props := display.TagProps{
+						Variant:  display.TagOutlined,
+						Closable: true,
+						OnClose:  func() { removeTag = tag },
+					}
+					if u.modelThinking == tag {
+						props.Variant = display.TagSolid
+						props.Color = display.TagPurple
+					}
+					chip := display.Tag(c, tag, props)
+					chip.Cursor(mui.CursorPointer)
+					chip.OnClick(func() { u.modelThinking = tag })
 				}
 			})
 			if removeTag != "" {
+				// 关闭按钮与标签点击可能落在同一次按下:别把「移除」误当成「选中」。
+				if u.modelThinking == removeTag && before != removeTag {
+					u.modelThinking = before
+				}
 				u.removeThinkingTag(removeTag)
 			}
 			mui.Row(c).Gap(6).AlignItems(mui.Center).Children(func() {
