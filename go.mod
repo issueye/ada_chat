@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/egoist/mygo v0.10.0
-	github.com/issueye/ada_t v0.0.0-00010101000000-000000000000
+	github.com/issueye/ada_t v0.0.0-20261124083554-a4f16242a7af
 	github.com/lobehub/lobe-mygo v0.0.0-20261116124832-d88b4ad7f238
 	golang.org/x/sys v0.50.0
 )
@@ -19,5 +19,3 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
-
-replace github.com/issueye/ada_t => ../ada_t
