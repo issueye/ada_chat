@@ -73,6 +73,8 @@ type Prefs struct {
 	Providers []Provider `json:"providers,omitempty"`
 	// ActiveProvider 是当前机器人进程使用的供应商 ID。
 	ActiveProvider string `json:"activeProvider,omitempty"`
+	// ThinkingTags 是思考级别标签集合;模型编辑器里可以移除或新增。
+	ThinkingTags []string `json:"thinkingTags,omitempty"`
 }
 
 // ModelSpec 是供应商下的一个模型及其运行参数。
@@ -99,6 +101,8 @@ type Provider struct {
 	Providers []Provider `json:"providers,omitempty"`
 	// ActiveProvider 是当前机器人进程使用的供应商 ID。
 	ActiveProvider string `json:"activeProvider,omitempty"`
+	// ThinkingTags 是思考级别标签集合;模型编辑器里可以移除或新增。
+	ThinkingTags []string `json:"thinkingTags,omitempty"`
 	// Model 是该供应商当前选中的模型 ID。
 	Model  string      `json:"model,omitempty"`
 	Models []ModelSpec `json:"models,omitempty"`
@@ -106,6 +110,9 @@ type Provider struct {
 
 // EnsureProviders 把旧的单供应商字段迁成列表,并保证 ActiveProvider 与各供应商的 Model 指向有效项。
 func (p *Prefs) EnsureProviders() {
+	if p.ThinkingTags == nil {
+		p.ThinkingTags = []string{"low", "medium", "high"}
+	}
 	if len(p.Providers) == 0 {
 		if p.Provider == "" && p.Endpoint == "" && p.Model == "" && p.APIKey == "" {
 			p.SyncLegacy()

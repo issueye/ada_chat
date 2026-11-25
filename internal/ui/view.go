@@ -29,28 +29,33 @@ type UI struct {
 
 	chatMenu bool
 
-	settings       *form.Form[app.Prefs]
-	settingsUp     bool
-	agentUp        bool
-	providerUp     bool
-	providerTab    int
-	providerList   []app.Provider
-	providerIdx    int
-	providerActive string
-	providerErr    string
-	modelEditor    bool
-	modelEdit      int
-	modelID        string
-	modelCtx       string
-	modelMax       string
-	modelSummary   string
-	modelThinking  string
-	modelErr       string
-	userMenu       bool
-	showKey        bool
-	renameUp       bool
-	renameDraft    string
-	confirmDel     bool
+	settings         *form.Form[app.Prefs]
+	settingsUp       bool
+	agentUp          bool
+	providerUp       bool
+	providerTab      int
+	providerList     []app.Provider
+	providerIdx      int
+	providerActive   string
+	providerErr      string
+	modelEditor      bool
+	modelEdit        int
+	modelID          string
+	modelCtx         string
+	modelMax         string
+	modelSummary     string
+	modelThinking    string
+	modelErr         string
+	providerTags     []string
+	newTag           string
+	providerDeleteUp bool
+	modelDeleteUp    bool
+	modelDeleteIdx   int
+	userMenu         bool
+	showKey          bool
+	renameUp         bool
+	renameDraft      string
+	confirmDel       bool
 	// deleteID 是「移除」要删的对话;0 表示用当前对话(旧入口的默认)。
 	deleteID   int
 	approvalUp bool

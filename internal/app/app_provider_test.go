@@ -52,4 +52,7 @@ func TestEnsureProvidersFillsDefaults(t *testing.T) {
 	if p.Provider != "" || p.Endpoint != "" || p.Model != "" {
 		t.Fatalf("空偏好不应写回旧字段: %+v", p)
 	}
+	if len(p.ThinkingTags) != 3 || p.ThinkingTags[0] != "low" || p.ThinkingTags[1] != "medium" || p.ThinkingTags[2] != "high" {
+		t.Fatalf("默认思考标签应为 low/medium/high: %v", p.ThinkingTags)
+	}
 }

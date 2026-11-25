@@ -17,8 +17,8 @@ import (
 	"ada_chat/internal/app"
 )
 
-// thinkingTags 是思考级别的默认标签;输入框仍可写自定义值(动态 tag)。
-var thinkingTags = []string{"low", "medium", "high"}
+// defaultThinkingTags 是思考级别的默认标签;用户可以在模型编辑器里移除/新增。
+var defaultThinkingTags = []string{"low", "medium", "high"}
 
 // —— 供应商管理:左侧列表 + 右侧[供应商信息][模型列表] ——
 
@@ -46,7 +46,7 @@ func (u *UI) providerSidebar(c *mui.Context, tk *theme.Tokens) {
 				u.addProviderDraft()
 			}
 		})
-		mui.Column(c).Gap(2).Children(func() {
+		mui.Column(c).Gap(2).AlignItems(mui.Stretch).Children(func() {
 			for i := range u.providerList {
 				i := i
 				p := u.providerList[i]
@@ -57,16 +57,17 @@ func (u *UI) providerSidebar(c *mui.Context, tk *theme.Tokens) {
 					}
 					row := mui.ButtonBase(c).Label(name).Row().Gap(6).AlignItems(mui.Center).
 						Grow(1).Basis(0).MinWidth(0).Padding(6, 8).Radius(tk.BorderRadiusSM).
-						Cursor(mui.CursorPointer)
+						Justify(mui.Start).Cursor(mui.CursorPointer)
 					if i == u.providerIdx {
 						row.Background(tk.FillSecondary)
 					} else if row.Hovered() {
 						row.Background(tk.FillTertiary)
 					}
 					row.Children(func() {
-						mui.Column(c).Gap(1).MinWidth(0).Children(func() {
-							mui.Text(c, name).FontSize(13).TextColor(tk.Text).SingleLine()
-							display.Text(c, providerSubtitle(p), display.TextProps{Type: display.TextSecondary, FontSize: 11}).SingleLine()
+						mui.Column(c).Grow(1).Basis(0).MinWidth(0).AlignItems(mui.Start).Children(func() {
+							mui.Text(c, name).FontSize(13).TextColor(tk.Text).SingleLine().TextAlign(mui.Start)
+							display.Text(c, providerSubtitle(p), display.TextProps{Type: display.TextSecondary, FontSize: 11}).
+								SingleLine().TextAlign(mui.Start)
 						})
 					})
 					if row.Clicked() {
@@ -74,13 +75,7 @@ func (u *UI) providerSidebar(c *mui.Context, tk *theme.Tokens) {
 						u.providerTab = 0
 						u.modelEditor = false
 					}
-					activeIcon := lucide.Star()
-					fg := tk.TextTertiary
-					if p.ID == u.providerActive {
-						fg = tk.Primary
-					}
-					_ = fg
-					star := action.ActionIcon(c, activeIcon, small("设为当前供应商"))
+					star := action.ActionIcon(c, lucide.Star(), small("设为当前供应商"))
 					if star.Clicked() {
 						u.providerActive = p.ID
 					}
@@ -98,8 +93,7 @@ func providerSubtitle(p app.Provider) string {
 	if kind == "" {
 		kind = "跟随 preset"
 	}
-	n := len(p.Models)
-	return kind + " · " + strconv.Itoa(n) + " 个模型"
+	return kind + " · " + strconv.Itoa(len(p.Models)) + " 个模型"
 }
 
 func (u *UI) providerDetail(c *mui.Context, tk *theme.Tokens) {
@@ -109,7 +103,6 @@ func (u *UI) providerDetail(c *mui.Context, tk *theme.Tokens) {
 		})
 		return
 	}
-	p := &u.providerList[u.providerIdx]
 	nav.Tabs(c, &u.providerTab, nav.TabsProps{
 		Variant: nav.TabsSquare,
 		Size:    theme.Small,
@@ -119,9 +112,9 @@ func (u *UI) providerDetail(c *mui.Context, tk *theme.Tokens) {
 		},
 	}, func(tab int) {
 		if tab == 1 {
-			u.providerModelsPane(c, tk, p)
+			u.providerModelsPane(c, tk, &u.providerList[u.providerIdx])
 		} else {
-			u.providerInfoPane(c, tk, p)
+			u.providerInfoPane(c, tk, &u.providerList[u.providerIdx])
 		}
 	})
 }
@@ -132,16 +125,7 @@ func (u *UI) providerInfoPane(c *mui.Context, tk *theme.Tokens, p *app.Provider)
 			mui.Text(c, "编辑供应商信息;保存后,新启动的机器人进程才使用它").FontSize(11).TextColor(tk.TextTertiary)
 			mui.Spacer(c)
 			if action.Button(c, "删除供应商", action.ButtonProps{Size: theme.Small}).Clicked() {
-				u.providerList = append(u.providerList[:u.providerIdx], u.providerList[u.providerIdx+1:]...)
-				if u.providerIdx >= len(u.providerList) && u.providerIdx > 0 {
-					u.providerIdx = len(u.providerList) - 1
-				}
-				if u.providerActive == p.ID {
-					u.providerActive = ""
-					if len(u.providerList) > 0 {
-						u.providerActive = u.providerList[0].ID
-					}
-				}
+				u.providerDeleteUp = true
 			}
 		})
 		botField(c, tk, "名称", true, "在供应商列表里显示的名字", func() {
@@ -194,34 +178,31 @@ func (u *UI) providerModelsPane(c *mui.Context, tk *theme.Tokens, p *app.Provide
 				u.openModelEditor(-1)
 			}
 		})
-		mui.Column(c).Gap(2).Children(func() {
+		mui.Column(c).Gap(2).AlignItems(mui.Stretch).Children(func() {
 			for i := range p.Models {
 				i := i
 				m := p.Models[i]
 				mui.Row(c).Gap(4).AlignItems(mui.Center).Children(func() {
 					row := mui.ButtonBase(c).Label(m.ID).Row().Gap(8).AlignItems(mui.Center).
-						Grow(1).Basis(0).MinWidth(0).Padding(6, 8).Radius(tk.BorderRadiusSM).Cursor(mui.CursorPointer)
+						Grow(1).Basis(0).MinWidth(0).Padding(6, 8).Radius(tk.BorderRadiusSM).
+						Justify(mui.Start).Cursor(mui.CursorPointer)
 					if row.Hovered() {
 						row.Background(tk.FillTertiary)
 					}
 					row.Children(func() {
-						mui.Column(c).Gap(1).MinWidth(0).Children(func() {
+						mui.Column(c).Grow(1).Basis(0).MinWidth(0).AlignItems(mui.Start).Children(func() {
 							title := m.ID
 							if title == "" {
 								title = "未命名模型"
 							}
-							mui.Text(c, title).FontSize(13).TextColor(tk.Text).SingleLine()
-							display.Text(c, modelSummary(m), display.TextProps{Type: display.TextSecondary, FontSize: 11}).SingleLine()
+							mui.Text(c, title).FontSize(13).TextColor(tk.Text).SingleLine().TextAlign(mui.Start)
+							display.Text(c, modelSummary(m), display.TextProps{Type: display.TextSecondary, FontSize: 11}).
+								SingleLine().TextAlign(mui.Start)
 						})
 					})
 					if row.Clicked() {
 						p.Model = m.ID
 					}
-					fg := tk.TextTertiary
-					if p.Model == m.ID {
-						fg = tk.Primary
-					}
-					_ = fg
 					if action.ActionIcon(c, lucide.Star(), small("设为当前模型")).Clicked() {
 						p.Model = m.ID
 					}
@@ -229,7 +210,8 @@ func (u *UI) providerModelsPane(c *mui.Context, tk *theme.Tokens, p *app.Provide
 						edit = i
 					}
 					if action.ActionIcon(c, lucide.Trash2(), small("删除模型")).Clicked() {
-						remove = i
+						u.modelDeleteIdx = i
+						u.modelDeleteUp = true
 					}
 				})
 			}
@@ -245,9 +227,6 @@ func (u *UI) providerModelsPane(c *mui.Context, tk *theme.Tokens, p *app.Provide
 		p.Models = append(p.Models[:remove], p.Models[remove+1:]...)
 		if p.Model == "" && len(p.Models) > 0 {
 			p.Model = p.Models[0].ID
-		}
-		if u.modelEdit == remove {
-			u.modelEditor = false
 		}
 	}
 	if edit >= 0 {
@@ -330,28 +309,42 @@ func (u *UI) modelEditorCard(c *mui.Context, tk *theme.Tokens, p *app.Provider) 
 			})
 		})
 		mui.Column(c).Gap(4).Children(func() {
-			label("思考级别(可直接输入自定义标签)")
-			mui.Row(c).Gap(6).AlignItems(mui.Center).Children(func() {
-				for _, tag := range thinkingTags {
+			label("思考级别(点标签选中,× 移除;也可新增自定义标签)")
+			removeTag := ""
+			mui.Row(c).Gap(6).AlignItems(mui.Center).Wrap().Children(func() {
+				for _, tag := range u.providerTags {
 					tag := tag
-					b := mui.ButtonBase(c).Label(tag).Padding(3, 10).Radius(999).FontSize(11).
-						Cursor(mui.CursorPointer)
-					bg, fg := tk.FillSecondary, tk.TextSecondary
-					if u.modelThinking == tag {
-						bg, fg = tk.PrimaryBg, tk.Primary
-					}
-					b.Background(bg).TextColor(fg).Children(func() {
-						mui.Text(c, tag).FontSize(11).TextColor(fg)
+					mui.Row(c).Gap(2).AlignItems(mui.Center).Children(func() {
+						b := mui.ButtonBase(c).Label(tag).Padding(3, 10).Radius(999).FontSize(11).
+							Cursor(mui.CursorPointer)
+						bg, fg := tk.FillSecondary, tk.TextSecondary
+						if u.modelThinking == tag {
+							bg, fg = tk.PrimaryBg, tk.Primary
+						}
+						b.Background(bg).TextColor(fg).Children(func() {
+							mui.Text(c, tag).FontSize(11).TextColor(fg)
+						})
+						if b.Clicked() {
+							u.modelThinking = tag
+						}
+						if action.ActionIcon(c, lucide.X(), small("移除标签 "+tag)).Clicked() {
+							removeTag = tag
+						}
 					})
-					if b.Clicked() {
-						u.modelThinking = tag
-					}
 				}
-				mui.Column(c).Width(150).Children(func() {
-					field.Input(c, &u.modelThinking, field.InputProps{
-						Variant: field.InputOutlined, Placeholder: "自定义",
-					}).Label("自定义思考级别")
+			})
+			if removeTag != "" {
+				u.removeThinkingTag(removeTag)
+			}
+			mui.Row(c).Gap(6).AlignItems(mui.Center).Children(func() {
+				mui.Column(c).Width(160).Children(func() {
+					field.Input(c, &u.newTag, field.InputProps{
+						Variant: field.InputOutlined, Placeholder: "新标签,如 minimal",
+					}).Label("新增思考级别")
 				})
+				if action.Button(c, "添加标签", action.ButtonProps{Size: theme.Small}).Clicked() {
+					u.addThinkingTag()
+				}
 			})
 		})
 		if u.modelErr != "" {
@@ -424,6 +417,34 @@ func parseOptional(s string) (int, string) {
 	return n, ""
 }
 
+func (u *UI) removeThinkingTag(tag string) {
+	tags := make([]string, 0, len(u.providerTags))
+	for _, t := range u.providerTags {
+		if t != tag {
+			tags = append(tags, t)
+		}
+	}
+	u.providerTags = tags
+	if u.modelThinking == tag {
+		u.modelThinking = ""
+	}
+}
+
+func (u *UI) addThinkingTag() {
+	tag := strings.TrimSpace(u.newTag)
+	if tag == "" {
+		return
+	}
+	for _, t := range u.providerTags {
+		if t == tag {
+			u.newTag = ""
+			return
+		}
+	}
+	u.providerTags = append(u.providerTags, tag)
+	u.newTag = ""
+}
+
 func (u *UI) addProviderDraft() {
 	id := "provider-" + strconv.Itoa(len(u.providerList)+1)
 	for u.providerHasID(id) {
@@ -447,10 +468,44 @@ func (u *UI) providerHasID(id string) bool {
 	return false
 }
 
+func (u *UI) deleteProviderAt(index int) {
+	if index < 0 || index >= len(u.providerList) {
+		return
+	}
+	removed := u.providerList[index]
+	u.providerList = append(u.providerList[:index], u.providerList[index+1:]...)
+	if u.providerIdx >= len(u.providerList) && u.providerIdx > 0 {
+		u.providerIdx = len(u.providerList) - 1
+	}
+	if u.providerActive == removed.ID {
+		u.providerActive = ""
+		if len(u.providerList) > 0 {
+			u.providerActive = u.providerList[0].ID
+		}
+	}
+	u.modelEditor = false
+}
+
+func (u *UI) deleteModelAt(index int) {
+	if len(u.providerList) == 0 || u.providerIdx < 0 || u.providerIdx >= len(u.providerList) {
+		return
+	}
+	p := &u.providerList[u.providerIdx]
+	if index < 0 || index >= len(p.Models) {
+		return
+	}
+	removed := p.Models[index]
+	p.Models = append(p.Models[:index], p.Models[index+1:]...)
+	if p.Model == removed.ID && len(p.Models) > 0 {
+		p.Model = p.Models[0].ID
+	}
+	if u.modelEdit == index {
+		u.modelEditor = false
+	}
+}
+
 // saveProviders 校验整份供应商列表,写回偏好并同步旧的单供应商字段。
 func (u *UI) saveProviders(c *mui.Context) {
-	tk := theme.TokensOf(c)
-	_ = tk
 	if len(u.providerList) == 0 {
 		u.providerErr = "至少保留一个供应商"
 		c.Invalidate()
@@ -497,6 +552,7 @@ func (u *UI) saveProviders(c *mui.Context) {
 	}
 	u.App.Prefs.Providers = u.providerList
 	u.App.Prefs.ActiveProvider = u.providerActive
+	u.App.Prefs.ThinkingTags = normalizeTags(u.providerTags)
 	u.App.Prefs.SyncLegacy()
 	u.providerUp = false
 	u.providerErr = ""
@@ -505,6 +561,20 @@ func (u *UI) saveProviders(c *mui.Context) {
 		return
 	}
 	feedback.ShowToast(c, feedback.ToastProps{Title: "供应商已保存", Type: feedback.ToastSuccess})
+}
+
+func normalizeTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
 }
 
 // cloneProviders 深拷贝模型列表;取消编辑时不影响已保存的偏好。
@@ -516,4 +586,49 @@ func cloneProviders(in []app.Provider) []app.Provider {
 		out = append(out, cp)
 	}
 	return out
+}
+
+// confirmProviderDelete / confirmModelDelete 是删除的二次确认弹窗。
+// 只有点「删除」才真的改列表。
+func (u *UI) confirmProviderDelete(c *mui.Context) {
+	if len(u.providerList) == 0 || u.providerIdx < 0 || u.providerIdx >= len(u.providerList) {
+		u.providerDeleteUp = false
+		return
+	}
+	p := u.providerList[u.providerIdx]
+	name := p.Name
+	if name == "" {
+		name = "未命名供应商"
+	}
+	ok := feedback.Modal(c, &u.providerDeleteUp, feedback.ModalProps{
+		Title: "删除供应商", Width: 420, OkText: "删除", CancelText: "取消",
+	}, func() {
+		display.Text(c, "确定删除「"+name+"」?它的 "+strconv.Itoa(len(p.Models))+" 个模型配置会一起删除。",
+			display.TextProps{Type: display.TextSecondary, FontSize: 13})
+	})
+	if ok {
+		u.deleteProviderAt(u.providerIdx)
+	}
+}
+
+func (u *UI) confirmModelDelete(c *mui.Context) {
+	if len(u.providerList) == 0 || u.providerIdx < 0 || u.providerIdx >= len(u.providerList) {
+		u.modelDeleteUp = false
+		return
+	}
+	p := &u.providerList[u.providerIdx]
+	if u.modelDeleteIdx < 0 || u.modelDeleteIdx >= len(p.Models) {
+		u.modelDeleteUp = false
+		return
+	}
+	name := p.Models[u.modelDeleteIdx].ID
+	ok := feedback.Modal(c, &u.modelDeleteUp, feedback.ModalProps{
+		Title: "删除模型", Width: 400, OkText: "删除", CancelText: "取消",
+	}, func() {
+		display.Text(c, "确定从「"+p.Name+"」删除模型「"+name+"」?", display.TextProps{Type: display.TextSecondary, FontSize: 13})
+	})
+	if ok {
+		u.deleteModelAt(u.modelDeleteIdx)
+		u.modelDeleteIdx = -1
+	}
 }

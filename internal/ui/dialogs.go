@@ -43,7 +43,11 @@ func (u *UI) agentDialog(c *mui.Context) {
 func (u *UI) providerDialog(c *mui.Context) {
 	ok := feedback.Modal(c, &u.providerUp, feedback.ModalProps{
 		Title: "供应商", Width: 880, OkText: "保存", CancelText: "取消",
-	}, func() { u.providerManager(c) })
+	}, func() {
+		u.providerManager(c)
+		u.confirmProviderDelete(c)
+		u.confirmModelDelete(c)
+	})
 	if ok {
 		u.saveProviders(c)
 	}
@@ -80,6 +84,10 @@ func (u *UI) openProviderSettings() {
 	u.userMenu = false
 	u.settingsUp, u.agentUp = false, false
 	u.providerList = cloneProviders(u.App.Prefs.Providers)
+	u.providerTags = append([]string(nil), u.App.Prefs.ThinkingTags...)
+	u.newTag = ""
+	u.providerDeleteUp, u.modelDeleteUp = false, false
+	u.modelDeleteIdx = -1
 	u.providerActive = u.App.Prefs.ActiveProvider
 	u.providerIdx = 0
 	for i := range u.providerList {
