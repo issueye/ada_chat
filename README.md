@@ -28,9 +28,15 @@ go run ./cmd/ada_chat
 
 - **Agent**（Popover → Agent）：`Agent 路径`（`ada-rpc-agent` 可执行文件）与 `Agent preset`
   （`agent.preset.json`），都可以直接输入或打开文件选择器；
-- **供应商**（Popover → 供应商）：选择 `跟随 preset` / `OpenAI 兼容` / `Replay（离线脚本）`。
-  - OpenAI 兼容：Endpoint、模型、API Key；选 Replay 不访问网络；
-  - 供应商覆盖由 runtime 在装配 preset 时生效，新进程使用，已运行进程不受影响；
+- **供应商**（Popover → 供应商）：**左右布局的供应商管理**——左边是供应商列表（可添加/切换/删除），
+  右边是两页签：
+  - **供应商信息**：名称、类型（跟随 preset / OpenAI 兼容 / Replay）、Endpoint、API Key，
+    以及「设为当前供应商」；
+  - **模型列表**：每个供应商维护自己的模型，点星标选当前模型；添加/编辑模型时设置
+    **上下文长度、最大输出、摘要阈值（%）、思考级别**；思考级别用动态 tag，默认 `low`/`medium`/`high`，
+    也可以在「自定义」输入框里写别的标签；
+  - 保存时把列表写回 `config.json`，并把当前供应商快照同步回旧的单供应商字段（runtime 仍只认这套）；
+  - 供应商/模型是进程级配置：保存后新启动的机器人进程才使用，已运行进程不受影响；
 - **常规设置**（Popover → 常规设置 / 标题栏齿轮）：显示名称、Enter 发送；有插件贡献
   `settings.tab` 时，插件页内容排在常规设置下面。
 

@@ -1,8 +1,8 @@
 package ui_test
 
 import (
-	"testing"
 	"path/filepath"
+	"testing"
 	"time"
 
 	mui "github.com/egoist/mygo/ui"
@@ -16,9 +16,11 @@ import (
 // 绝不能写到本机真实的 state.json。
 func isolateState(t *testing.T) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "state.json")
-	restore := app.SetStatePath(path)
+	dir := t.TempDir()
+	restore := app.SetStatePath(filepath.Join(dir, "state.json"))
 	t.Cleanup(restore)
+	restoreCfg := app.SetConfigPath(filepath.Join(dir, "config.json"))
+	t.Cleanup(restoreCfg)
 }
 
 // baseApp 造最小状态;同时把 state 文件指到临时路径——这里的操作会 persist,

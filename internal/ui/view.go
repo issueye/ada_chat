@@ -29,18 +29,31 @@ type UI struct {
 
 	chatMenu bool
 
-	settings    *form.Form[app.Prefs]
-	settingsUp  bool
-	agentUp     bool
-	providerUp  bool
-	userMenu    bool
-	showKey     bool
-	renameUp    bool
-	renameDraft string
-	confirmDel  bool
+	settings       *form.Form[app.Prefs]
+	settingsUp     bool
+	agentUp        bool
+	providerUp     bool
+	providerTab    int
+	providerList   []app.Provider
+	providerIdx    int
+	providerActive string
+	providerErr    string
+	modelEditor    bool
+	modelEdit      int
+	modelID        string
+	modelCtx       string
+	modelMax       string
+	modelSummary   string
+	modelThinking  string
+	modelErr       string
+	userMenu       bool
+	showKey        bool
+	renameUp       bool
+	renameDraft    string
+	confirmDel     bool
 	// deleteID 是「移除」要删的对话;0 表示用当前对话(旧入口的默认)。
-	deleteID int
-	approvalUp  bool
+	deleteID   int
+	approvalUp bool
 
 	botDraft  app.Bot
 	botEditID int
@@ -51,7 +64,7 @@ type UI struct {
 	botEnvErr  string
 	// botTab 是机器人对话框当前的页:0 基本 / 1 提示词 / 2 环境变量。
 	botTab int
-	botUp     bool
+	botUp  bool
 
 	dirPicking bool
 	pickDir    func() (string, error)

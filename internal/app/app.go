@@ -69,6 +69,118 @@ type Prefs struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	Model    string `json:"model,omitempty"`
 	APIKey   string `json:"apiKey,omitempty"`
+	// Providers 是用户维护的供应商列表;为空时把上面的单供应商字段迁过来。
+	Providers []Provider `json:"providers,omitempty"`
+	// ActiveProvider 是当前机器人进程使用的供应商 ID。
+	ActiveProvider string `json:"activeProvider,omitempty"`
+}
+
+// ModelSpec 是供应商下的一个模型及其运行参数。
+type ModelSpec struct {
+	ID string `json:"id"`
+	// ContextWindow 是上下文长度(token);0 表示未知。
+	ContextWindow int `json:"contextWindow,omitempty"`
+	// MaxOutput 是单次最大输出(token)。
+	MaxOutput int `json:"maxOutput,omitempty"`
+	// SummaryThreshold 是触发摘要的上下文占比(%);0 表示用默认。
+	SummaryThreshold int `json:"summaryThreshold,omitempty"`
+	// Thinking 是思考级别标签:默认 low/medium/high,也允许自定义。
+	Thinking string `json:"thinking,omitempty"`
+}
+
+// Provider 是一个模型供应商:OpenAI 兼容端点或 replay;模型列表各自独立。
+type Provider struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind,omitempty"` // openai | replay | 空(跟随 preset)
+	Endpoint string `json:"endpoint,omitempty"`
+	APIKey   string `json:"apiKey,omitempty"`
+	// Providers 是用户维护的供应商列表;为空时把上面的单供应商字段迁过来。
+	Providers []Provider `json:"providers,omitempty"`
+	// ActiveProvider 是当前机器人进程使用的供应商 ID。
+	ActiveProvider string `json:"activeProvider,omitempty"`
+	// Model 是该供应商当前选中的模型 ID。
+	Model  string      `json:"model,omitempty"`
+	Models []ModelSpec `json:"models,omitempty"`
+}
+
+// EnsureProviders 把旧的单供应商字段迁成列表,并保证 ActiveProvider 与各供应商的 Model 指向有效项。
+func (p *Prefs) EnsureProviders() {
+	if len(p.Providers) == 0 {
+		if p.Provider == "" && p.Endpoint == "" && p.Model == "" && p.APIKey == "" {
+			p.SyncLegacy()
+			return
+		}
+		name := "默认供应商"
+		switch p.Provider {
+		case "openai":
+			name = "OpenAI 兼容"
+		case "replay":
+			name = "Replay"
+		}
+		prov := Provider{ID: "default", Name: name, Kind: p.Provider, Endpoint: p.Endpoint, APIKey: p.APIKey, Model: p.Model}
+		if p.Model != "" {
+			prov.Models = []ModelSpec{{ID: p.Model}}
+		}
+		p.Providers = []Provider{prov}
+	}
+	for i := range p.Providers {
+		prov := &p.Providers[i]
+		if prov.ID == "" {
+			prov.ID = "provider-" + strconv.Itoa(i+1)
+		}
+		if prov.Name == "" {
+			prov.Name = prov.ID
+		}
+		if len(prov.Models) == 0 && prov.Model != "" {
+			prov.Models = []ModelSpec{{ID: prov.Model}}
+		}
+		if prov.Model == "" && len(prov.Models) > 0 {
+			prov.Model = prov.Models[0].ID
+		}
+	}
+	if p.ActiveProvider == "" || !p.HasProvider(p.ActiveProvider) {
+		p.ActiveProvider = p.Providers[0].ID
+	}
+	p.SyncLegacy()
+}
+
+// HasProvider 判断供应商 ID 是否存在。
+func (p *Prefs) HasProvider(id string) bool {
+	_, ok := p.ProviderByID(id)
+	return ok
+}
+
+// ProviderByID 按 ID 取供应商。
+func (p *Prefs) ProviderByID(id string) (Provider, bool) {
+	for i := range p.Providers {
+		if p.Providers[i].ID == id {
+			return p.Providers[i], true
+		}
+	}
+	return Provider{}, false
+}
+
+// ActiveProviderSpec 返回当前供应商;没有时 ok=false。
+func (p *Prefs) ActiveProviderSpec() (Provider, bool) {
+	return p.ProviderByID(p.ActiveProvider)
+}
+
+// SyncLegacy 把当前供应商快照写回旧的单供应商字段:
+// supervisor 与插件宿主仍只认这套字段,列表是它的编辑面。
+func (p *Prefs) SyncLegacy() {
+	p.Provider, p.Endpoint, p.Model, p.APIKey = "", "", "", ""
+	prov, ok := p.ActiveProviderSpec()
+	if !ok {
+		return
+	}
+	p.Provider = prov.Kind
+	p.Endpoint = prov.Endpoint
+	p.APIKey = prov.APIKey
+	p.Model = prov.Model
+	if p.Model == "" && len(prov.Models) > 0 {
+		p.Model = prov.Models[0].ID
+	}
 }
 
 // BotState 是一个机器人进程实例的连接状态。
@@ -167,6 +279,7 @@ func New() *App {
 	if p.Model == "" {
 		p.Model = strings.TrimSpace(os.Getenv("ADA_LLM_MODEL"))
 	}
+	p.EnsureProviders()
 	a := &App{Prefs: p}
 	a.restore()
 	return a
@@ -175,12 +288,24 @@ func New() *App {
 // ConfigFile 返回偏好文件的位置；目录不存在时也能返回路径。
 func ConfigFile() (string, error) { return configFile() }
 
-func configFile() (string, error) {
+var configPath = defaultConfigPath
+
+// defaultConfigPath 是偏好文件的默认位置。
+func defaultConfigPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "ada_chat", "config.json"), nil
+}
+
+func configFile() (string, error) { return configPath() }
+
+// SetConfigPath 覆盖偏好文件位置,返回恢复函数。只给宿主集成测试/工具用;生产代码不要调用。
+func SetConfigPath(path string) (restore func()) {
+	old := configPath
+	configPath = func() (string, error) { return path, nil }
+	return func() { configPath = old }
 }
 
 // SavePrefs 把当前偏好原子写入配置文件。
