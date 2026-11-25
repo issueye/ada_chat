@@ -42,14 +42,16 @@ type Message struct {
 // Session 是一条对话。BotID 非零时，回答来自那个机器人的进程实例。
 // Session 是一条对话：机器人、标题、预览和消息。
 type Session struct {
-	ID       int        `json:"id"`
-	Title    string     `json:"title"`
-	Preview  string     `json:"preview,omitempty"`
-	Updated  time.Time  `json:"updated"`
-	Unread   int        `json:"unread,omitempty"`
-	Pinned   bool       `json:"pinned,omitempty"`
+	ID      int       `json:"id"`
+	Title   string    `json:"title"`
+	Preview string    `json:"preview,omitempty"`
+	Updated time.Time `json:"updated"`
+	Unread  int       `json:"unread,omitempty"`
+	Pinned  bool      `json:"pinned,omitempty"`
 	// Archived 归档的对话从「今天/更早」移到「归档」;消息与 id 都保留。
-	Archived bool       `json:"archived,omitempty"`
+	Archived bool `json:"archived,omitempty"`
+	// Queue 是生成中排队的用户消息;当前这一轮结束时按顺序自动发出。
+	Queue    []string   `json:"queue,omitempty"`
 	BotID    int        `json:"botId"`
 	Messages []*Message `json:"messages,omitempty"`
 }
@@ -318,19 +320,67 @@ func (a *App) ArchiveSession(id int, archived bool) bool {
 	}
 	return false
 }
+
 // Send 把草稿送进对话，并交给它绑定的机器人。上一轮还在生成时不再接受新消息。
+// Send 把草稿送进对话,并交给它绑定的机器人。
+// 上一轮还在生成时改为排队:草稿进会话的 Queue,等这一轮结束自动发出,
+// 这样用户可以在等待时继续输入,而不是被输入框挡住。
 func (a *App) Send() {
+	text := strings.TrimSpace(a.Draft)
+	if text == "" {
+		return
+	}
 	if a.Busy() {
+		a.Enqueue(text)
 		return
 	}
 	s := a.Current()
 	if s == nil || s.BotID == 0 {
 		return
 	}
-	text := strings.TrimSpace(a.Draft)
+	a.Draft = ""
+	a.sendText(s, text)
+}
+
+// Enqueue 把一条消息排进当前会话的待发送队列(不立刻交给机器人)。
+func (a *App) Enqueue(text string) bool {
+	text = strings.TrimSpace(text)
 	if text == "" {
-		return
+		return false
 	}
+	s := a.Current()
+	if s == nil || s.BotID == 0 {
+		return false
+	}
+	s.Queue = append(s.Queue, text)
+	a.Draft = ""
+	a.persist()
+	return true
+}
+
+// DropQueued 移除队列里的一条(按索引),用于输入框上方的待发送列表。
+func (a *App) DropQueued(s *Session, index int) bool {
+	if s == nil || index < 0 || index >= len(s.Queue) {
+		return false
+	}
+	s.Queue = append(s.Queue[:index], s.Queue[index+1:]...)
+	a.persist()
+	return true
+}
+
+// ClearQueue 清空待发送队列,返回清掉的条数。
+func (a *App) ClearQueue(s *Session) int {
+	if s == nil || len(s.Queue) == 0 {
+		return 0
+	}
+	n := len(s.Queue)
+	s.Queue = nil
+	a.persist()
+	return n
+}
+
+// sendText 是真正落一条用户消息并交给机器人的路径;Send 与队列排空都走这里。
+func (a *App) sendText(s *Session, text string) {
 	if len(s.Messages) == 0 {
 		s.Title = Clip(text, 48)
 	}
@@ -338,8 +388,17 @@ func (a *App) Send() {
 	s.Preview = Clip(text, 88)
 	s.Updated = a.now()
 	s.Unread = 0
-	a.Draft = ""
 	a.sendToBot(s, text)
+}
+
+// drainQueue 在当前一轮结束后按顺序发出队列里的下一条;只在没有在途回答时前进。
+func (a *App) drainQueue(s *Session, engine BotEngine) {
+	if s == nil || engine == nil || s.Running() || len(s.Queue) == 0 {
+		return
+	}
+	text := s.Queue[0]
+	s.Queue = s.Queue[1:]
+	a.sendText(s, text)
 }
 
 // AppendExternal 向当前会话追加一条消息（插件/外部服务用，不触发机器人）。
@@ -413,6 +472,8 @@ func (a *App) StopTurn() bool {
 	s.Preview = Clip(last.Text, 88)
 	s.Updated = a.now()
 	a.removeApprovals(s.BotID, last.ID)
+	// 停止是「不要再继续」:排队的消息也一并丢掉,避免停下来又自动发下一条。
+	s.Queue = nil
 	a.persist()
 	return true
 }
@@ -762,7 +823,7 @@ func (a *App) OpenBotChat(id int) bool {
 		return false
 	}
 	a.StartBot(id)
-		a.persist()
+	a.persist()
 	for _, s := range a.Sessions {
 		if s.BotID == id && !s.Archived {
 			a.ActiveID = s.ID
@@ -977,6 +1038,7 @@ func (a *App) BotTurnDone(botID, turn int, final string) {
 			s.Updated = a.now()
 			a.removeApprovals(botID, turn)
 			a.persist()
+			a.drainQueue(s, a.Engine)
 		}
 	})
 }
@@ -1001,6 +1063,7 @@ func (a *App) BotTurnFailed(botID, turn int, reason string) {
 		s.Preview = Clip(m.Text, 88)
 		a.removeApprovals(botID, turn)
 		a.persist()
+		a.drainQueue(s, a.Engine)
 	})
 }
 
